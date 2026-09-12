@@ -56,6 +56,35 @@ signature, evidence) plus pre/post state fingerprints and `state_changed`.
 `StepRecord` carries a compact summary (`verification_status`,
 `failure_kinds`); the authoritative detail lives here.
 
+### Phase 1C recovery events
+
+- `recovery` events carry the trigger identity of the verified failure that
+  produced the directive (`failure_kind`, `failure_signature`) plus
+  `directive_kind`, `blocked_actions`; WAIT_AND_REOBSERVE additionally
+  records the harness noop's real environment result (`wait_ms`,
+  `action_error`, `reward`, `terminated`, `truncated`).
+- `policy_decision` `outcome=abort` with `data.short_circuited=true` records
+  the deterministic TASK_FAILED abort decision: **TASK_FAILED is
+  terminal-short-circuited by EpisodeRunner** (the environment terminal
+  check has the highest priority and runs before the policy), so the policy
+  ABORT for TASK_FAILED is recorded for a consistent trace but never enters
+  recovery.
+- A `recovery` event with `outcome=blocked_action_selected` records that the
+  agent re-selected a blocked action and re-decided without executing it.
+  These re-decisions are NOT new recoveries (no directive is created) and
+  are counted separately as `blocked_action_redecision_count`; they remain
+  bounded by the recovery budget as an anti-loop guard.
+
+### Recovery metrics semantics (Phase 1C)
+
+`recovery_count` counts created/executed RecoveryDirectives only. The local
+outcome invariant is `recovery_success_count + recovery_failed_count +
+recovery_unresolved_count == recovery_count`; outcomes are evaluated against
+the **recovery-start fingerprint** within a 2-agent-step window, and an
+episode that ends before the window completes reports its pending outcomes
+as explicitly unresolved (never silently dropped). The recovery budget has a
+single canonical config path: `reliability.recovery.max_recoveries_per_episode`.
+
 ## manifest.json
 
 ```json

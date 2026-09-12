@@ -22,7 +22,9 @@
         "recovery_success_counted": true,
         "recovered_episode": true,
         "blocked_executed_once": true,
-        "redecide_event_recorded": true
+        "redecide_event_recorded": true,
+        "event_has_trigger_identity": true,
+        "outcome_invariant": true
       },
       "pass": true,
       "failed_assertions": []
@@ -45,6 +47,7 @@
         "environment_action",
         "expires_after_agent_steps",
         "failure_kind",
+        "failure_signature",
         "reason",
         "reward",
         "terminated",
@@ -92,14 +95,18 @@
       "status": "error",
       "error_type": "RECOVERY_FAILED",
       "recovery_count": 3,
+      "recovery_failed_count": 3,
+      "recovery_unresolved_count": 0,
       "steps": 4,
-      "expected": "controlled RECOVERY_FAILED abort at the budget boundary (3 recoveries), never an unbounded loop",
+      "expected": "controlled RECOVERY_FAILED abort at the budget boundary (3 recoveries), never an unbounded loop; no phantom recovery failure from the abort itself",
       "assertions": {
         "not_success": true,
         "recovery_failed_error": true,
         "budget_respected": true,
+        "no_phantom_failure": true,
         "bounded_steps": true,
-        "no_recovery_env_actions": true
+        "no_recovery_env_actions": true,
+        "outcome_invariant": true
       },
       "pass": true,
       "failed_assertions": []
@@ -140,17 +147,19 @@
     {
       "scenario": "C7 blocked action re-selected",
       "status": "success",
-      "recovery_count": 2,
+      "recovery_count": 1,
+      "blocked_action_redecision_count": 1,
       "steps": 2,
       "executed_actions": [
         "click(bid='1')",
         "click(bid='2')"
       ],
-      "expected": "success; the re-selected blocked action never enters env.step; re-decision consumes recovery budget",
+      "expected": "success; the re-selected blocked action never enters env.step; re-decision counted separately from recovery_count but still guard/budget constrained",
       "assertions": {
         "success": true,
         "blocked_never_reexecuted": true,
-        "two_recoveries": true,
+        "one_actual_recovery": true,
+        "redecision_counted_separately": true,
         "redecide_event_recorded": true,
         "final_step_action": true
       },
@@ -172,6 +181,100 @@
         "one_recovery_env_action": true,
         "one_agent_step": true,
         "recovered_episode": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "C9 budget exhausted + clean PASS -> continue",
+      "status": "success",
+      "recovery_count": 3,
+      "steps": 4,
+      "policy_outcomes": [
+        "recover",
+        "recover",
+        "recover"
+      ],
+      "expected": "success after the budget is exhausted: a clean step must continue normally",
+      "assertions": {
+        "success": true,
+        "three_recoveries": true,
+        "no_abort_after_budget": true,
+        "continued_after_budget": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "C10 budget exhausted + no_progress -> continue",
+      "status": "success",
+      "recovery_count": 3,
+      "steps": 5,
+      "policy_outcomes": [
+        "recover",
+        "recover",
+        "recover",
+        "continue"
+      ],
+      "expected": "a single NO_PROGRESS under an exhausted budget still continues; the episode then succeeds",
+      "assertions": {
+        "success": true,
+        "three_recoveries": true,
+        "continued_after_budget": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "C11 budget exhausted + action_error -> abort",
+      "status": "error",
+      "error_type": "RECOVERY_FAILED",
+      "recovery_count": 3,
+      "recovery_failed_count": 3,
+      "steps": 4,
+      "expected": "an exhausted budget blocks starting a NEW recoverable recovery -> controlled RECOVERY_FAILED abort",
+      "assertions": {
+        "not_success": true,
+        "recovery_failed_error": true,
+        "budget_respected": true,
+        "no_phantom_failure": true,
+        "outcome_invariant": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "C12 pending recovery finalized at episode end",
+      "status": "max_steps_reached",
+      "recovery_count": 1,
+      "recovery_success_count": 0,
+      "recovery_failed_count": 0,
+      "recovery_unresolved_count": 1,
+      "expected": "a recovery on the last step is counted as explicitly unresolved, never silently lost",
+      "assertions": {
+        "one_recovery": true,
+        "no_silent_success": true,
+        "no_silent_failure": true,
+        "explicitly_unresolved": true,
+        "outcome_invariant": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "C13 wait recovery restores state (fingerprint reference)",
+      "status": "success",
+      "recovery_count": 1,
+      "recovery_success_count": 1,
+      "recovery_environment_actions": 1,
+      "steps": 2,
+      "expected": "the recovery noop itself moves the state away from the recovery-start fingerprint; the next agent action changes nothing, yet the outcome is success (R1)",
+      "assertions": {
+        "success": true,
+        "one_recovery": true,
+        "one_recovery_env_action": true,
+        "recovery_success_counted": true,
+        "no_failed_no_unresolved": true
       },
       "pass": true,
       "failed_assertions": []

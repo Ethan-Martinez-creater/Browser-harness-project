@@ -149,12 +149,12 @@ def make_summary_with_retry_recovery() -> dict:
     }
     summary["config"]["reliability"]["recovery"] = {
         "enabled": True,
+        "max_recoveries_per_episode": 3,
         "wait_ms": 500,
         "block_steps": 1,
     }
     summary["config"]["reliability"]["budget"] = {
         "max_extra_model_calls_per_episode": 6,
-        "max_recoveries_per_episode": 3,
     }
     summary["aggregate"].update({
         "total_retry_count": 4,
@@ -170,9 +170,11 @@ def make_summary_with_retry_recovery() -> dict:
         "total_recovery_count": 2,
         "recovery_success_count": 1,
         "recovery_failed_count": 1,
+        "recovery_unresolved_count": 0,
         "episodes_with_recovery": 1,
         "recovered_episode_count": 1,
         "recovery_environment_actions": 1,
+        "blocked_action_redecision_count": 1,
         "total_recovery_latency_s": 0.5,
     })
     return summary
@@ -199,9 +201,13 @@ def test_phase1c_profile_renders_recovery_metrics():
     assert "| episodes_with_recovery | 1 |" in report
     assert "| recovered_episode_count | 1 |" in report
     assert "| recovery_environment_actions | 1 |" in report
+    assert "| recovery_unresolved_count | 0 |" in report
+    assert "| blocked_action_redecision_count | 1 |" in report
     assert "| total_recovery_latency_s | 0.500 |" in report
-    assert "budget.max_recoveries_per_episode: 3" in report
+    # canonical recovery budget path: never reliability.budget.* (B1)
+    assert "recovery.max_recoveries_per_episode: 3" in report
+    assert "budget.max_recoveries_per_episode" not in report
     # phase1c also keeps the verification and retry sections
     assert "Verification layer metrics" in report
     assert "Retry layer metrics" in report
-    assert "blocked actions never" in report
+    assert "actions never reach env.step" in report

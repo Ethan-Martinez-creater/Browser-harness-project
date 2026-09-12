@@ -69,7 +69,10 @@ class RecoveryManager:
         reliability_state.active_recovery_directive = directive
 
         base_event = {
-            "failure_kind": None,
+            "failure_kind": directive.failure_kind.value
+            if directive.failure_kind
+            else None,
+            "failure_signature": directive.failure_signature,
             "directive_kind": directive.kind.value,
             "reason": directive.reason,
             "blocked_actions": list(directive.blocked_actions),

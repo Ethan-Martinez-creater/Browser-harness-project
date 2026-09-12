@@ -30,12 +30,12 @@ reliability:
 
   recovery:
     enabled: true
-    wait_ms: 500              # WAIT_AND_REOBSERVE harness noop wait
-    block_steps: 1            # REDECIDE_WITH_FEEDBACK blocks the failed action
+    max_recoveries_per_episode: 3   # canonical recovery budget location
+    wait_ms: 500                    # WAIT_AND_REOBSERVE harness noop wait
+    block_steps: 1                  # REDECIDE_WITH_FEEDBACK blocks the failed action
 
   budget:
     max_extra_model_calls_per_episode: 6
-    max_recoveries_per_episode: 3
 
 model:
   provider: openai_compatible

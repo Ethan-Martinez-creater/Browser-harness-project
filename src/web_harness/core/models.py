@@ -167,13 +167,22 @@ class RunResult(BaseModel):
     retry_input_tokens: int = 0
     retry_output_tokens: int = 0
     retry_latency_s: float = 0.0
-    # Phase 1C recovery accounting (totals over the whole episode)
+    # Phase 1C recovery accounting (totals over the whole episode).
+    # recovery_count = created/executed RecoveryDirectives; success + failed
+    # + unresolved must always sum to recovery_count.
     recovery_count: int = 0
     recovery_success_count: int = 0
     recovery_failed_count: int = 0
+    # recoveries whose 2-step outcome window outlived the episode (explicit,
+    # never silently dropped)
+    recovery_unresolved_count: int = 0
     recovered_episode: bool = False
     recovery_environment_actions: int = 0
     recovery_latency_s: float = 0.0
+    # blocked-action re-decisions: the agent re-selected a blocked action and
+    # re-decided without executing it; separate from recovery_count (no new
+    # directive), bounded by the same recovery budget as an anti-loop guard
+    blocked_action_redecision_count: int = 0
 
 
 def json_dump(model: BaseModel) -> str:

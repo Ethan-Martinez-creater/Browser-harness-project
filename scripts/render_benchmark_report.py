@@ -189,31 +189,41 @@ def render_recovery_metrics(summary: dict) -> list[str]:
         "## Recovery layer metrics (Phase 1C)",
         "",
         f"- recovery enabled: {recovery_cfg.get('enabled', False)}",
+        f"- recovery.max_recoveries_per_episode: "
+        f"{recovery_cfg.get('max_recoveries_per_episode', 3)} "
+        f"(canonical recovery budget path)",
         f"- recovery.wait_ms (WAIT_AND_REOBSERVE noop wait): "
         f"{recovery_cfg.get('wait_ms', 500)}",
         f"- recovery.block_steps (REDECIDE_WITH_FEEDBACK block): "
         f"{recovery_cfg.get('block_steps', 1)}",
-        f"- budget.max_recoveries_per_episode: "
-        f"{budget_cfg.get('max_recoveries_per_episode', 3)}",
+        f"- budget.max_extra_model_calls_per_episode: "
+        f"{budget_cfg.get('max_extra_model_calls_per_episode', 6)}",
         "",
         "| metric | value |",
         "|---|---:|",
         f"| total_recovery_count | {agg.get('total_recovery_count', 0)} |",
         f"| recovery_success_count | {agg.get('recovery_success_count', 0)} |",
         f"| recovery_failed_count | {agg.get('recovery_failed_count', 0)} |",
+        f"| recovery_unresolved_count | {agg.get('recovery_unresolved_count', 0)} |",
         f"| episodes_with_recovery | {agg.get('episodes_with_recovery', 0)} |",
         f"| recovered_episode_count | {agg.get('recovered_episode_count', 0)} |",
         f"| recovery_environment_actions | "
         f"{agg.get('recovery_environment_actions', 0)} |",
+        f"| blocked_action_redecision_count | "
+        f"{agg.get('blocked_action_redecision_count', 0)} |",
         f"| total_recovery_latency_s | "
         f"{fmt_num(agg.get('total_recovery_latency_s', 0.0))} |",
         "",
         "Recovery scope guarantees: recovery is triggered only by the",
-        "deterministic rule policy over verified failure signals; a recovery",
-        "environment action (WAIT_AND_REOBSERVE noop) is never counted as an",
-        "Agent step and never becomes a StepRecord; blocked actions never",
-        "reach env.step; recovery is bounded by max_recoveries_per_episode and",
-        "independent of the Phase 1B extra-model-call budget.",
+        "deterministic rule policy over verified failure signals; an",
+        "exhausted budget never kills a PASS / single-NO_PROGRESS step; a",
+        "recovery environment action (WAIT_AND_REOBSERVE noop) is never",
+        "counted as an Agent step and never becomes a StepRecord; blocked",
+        "actions never reach env.step (re-selections are counted separately",
+        "as blocked_action_redecision_count); success + failed + unresolved",
+        "sum to total_recovery_count; recovery is bounded by",
+        "recovery.max_recoveries_per_episode and independent of the Phase 1B",
+        "extra-model-call budget.",
         "",
     ]
     return lines

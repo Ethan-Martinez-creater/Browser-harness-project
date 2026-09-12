@@ -29,6 +29,27 @@
 6. `estimated_cost` is null by design; token counts above are the
    authoritative usage record.
 
+## Remediation note (Phase 1C closure review)
+
+This smoke run was produced by the pre-remediation runtime. The remediation
+changed recovery accounting semantics without changing the real execution
+trajectory (identical policy decisions, model calls and environment actions):
+
+- `recovery_count` now counts created/executed RecoveryDirectives only;
+  blocked-action re-selections are counted separately as
+  `blocked_action_redecision_count` (the machine result above predates this
+  split, so its per-episode `recovery_count` may include what is now a
+  re-decision).
+- local outcomes are evaluated against the recovery-start fingerprint and
+  episodes may report `recovery_unresolved_count`; `recovery_success_count +
+  recovery_failed_count + recovery_unresolved_count == recovery_count`.
+- the recovery budget moved to its canonical config path
+  `reliability.recovery.max_recoveries_per_episode`.
+
+The full C1-C13 deterministic fault suite (`phase1c_fault_suite.json`) was
+re-run against the remediated runtime and passes, including the new budget /
+outcome / fingerprint semantics.
+
 ## Reproduction
 
 ```bash

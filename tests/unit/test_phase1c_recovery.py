@@ -16,6 +16,8 @@ Guarantees under test:
 import json
 from pathlib import Path
 
+import pytest
+
 from web_harness.agents.baseline import BaselineAgent
 from web_harness.config.loader import HarnessConfig
 from web_harness.core.errors import ErrorType
@@ -135,7 +137,7 @@ def test_policy_rules_are_fixed():
     )
     assert d.action == PolicyAction.CONTINUE
 
-    # budget exhausted -> ABORT
+    # budget exhausted + ACTION_ERROR -> ABORT (no new recovery possible)
     state.recovery_count = 3
     d = policy.decide(
         signals=[signal(FailureKind.ACTION_ERROR, "action_error:click:timeout")],
@@ -143,6 +145,51 @@ def test_policy_rules_are_fixed():
         reliability_state=state, budget=budget,
     )
     assert d.action == PolicyAction.ABORT
+
+    # budget exhausted must NEVER kill normal execution (B2)
+    state.recovery_count = budget.max_recoveries_per_episode
+
+    # budget full + clean PASS -> CONTINUE
+    d = policy.decide(
+        signals=[], failed_action=None,
+        reliability_state=state, budget=budget,
+    )
+    assert d.action == PolicyAction.CONTINUE
+
+    # budget full + single NO_PROGRESS -> CONTINUE
+    d = policy.decide(
+        signals=[signal(FailureKind.NO_PROGRESS, "no_progress:x",
+                        severity=FailureSeverity.WARNING)],
+        failed_action="click(bid='1')",
+        reliability_state=state, budget=budget,
+    )
+    assert d.action == PolicyAction.CONTINUE
+
+    # budget full + OBSERVATION_INVALID -> ABORT
+    d = policy.decide(
+        signals=[signal(FailureKind.OBSERVATION_INVALID, "observation_invalid:x")],
+        failed_action="click(bid='1')",
+        reliability_state=state, budget=budget,
+    )
+    assert d.action == PolicyAction.ABORT
+
+    # budget full + LOOP_DETECTED -> ABORT
+    d = policy.decide(
+        signals=[signal(FailureKind.LOOP_DETECTED, "loop:x")],
+        failed_action="click(bid='1')",
+        reliability_state=state, budget=budget,
+    )
+    assert d.action == PolicyAction.ABORT
+
+    # recovery directives carry the trigger failure identity (R2)
+    state.recovery_count = 0
+    d = policy.decide(
+        signals=[signal(FailureKind.ACTION_ERROR, "action_error:click:timeout")],
+        failed_action="click(bid='1')",
+        reliability_state=state, budget=budget,
+    )
+    assert d.directive.failure_kind == FailureKind.ACTION_ERROR
+    assert d.directive.failure_signature == "action_error:click:timeout"
 
 
 # -- C1: ACTION_ERROR once -> REDECIDE + block -> alternate action -> success --
@@ -291,6 +338,16 @@ def test_c4_recovery_budget_exhausted_controlled_abort(tmp_path):
     assert result.recovery_count == 3
     assert result.recovery_environment_actions == 0
     assert result.num_steps == 4
+    # outcome accounting invariant (B3): the abort that refuses a 4th
+    # recovery adds no phantom failure; success+failed+unresolved == count
+    assert result.recovery_failed_count == 3
+    assert result.recovery_unresolved_count == 0
+    assert (
+        result.recovery_success_count
+        + result.recovery_failed_count
+        + result.recovery_unresolved_count
+        == result.recovery_count
+    )
 
 
 # -- C5: single NO_PROGRESS -> CONTINUE (no recovery) --------------------------
@@ -344,9 +401,13 @@ def test_c7_blocked_action_reselected_never_executed(tmp_path):
     result = runner.run(TASK, run_id="c7")
 
     assert result.success
-    # first recovery (action error) + one re-decision after the agent picked
-    # the blocked action again
-    assert result.recovery_count == 2
+    # one actual recovery (the action-error directive); re-selecting the
+    # blocked action is a separate re-decision, not a new recovery (R3)
+    assert result.recovery_count == 1
+    assert result.blocked_action_redecision_count == 1
+    # outcome invariant: the single recovery resolved successfully
+    assert result.recovery_success_count + result.recovery_failed_count \
+        + result.recovery_unresolved_count == result.recovery_count
     assert result.num_steps == 2
     # the blocked action entered the environment exactly once: before it was
     # blocked. The re-selected blocked action NEVER reached env.step.
@@ -378,6 +439,131 @@ def test_c8_recovery_noop_termination_accepted(tmp_path):
     # one agent decision only; the terminating noop was the recovery action
     assert result.num_steps == 1
     assert steps_of(result)[0].action == "click(bid='1')"
+
+
+# -- C12: pending recovery finalized (as unresolved) when the episode ends -----
+
+
+def test_c12_pending_recovery_finalized_not_silently_lost(tmp_path):
+    # recovery on the LAST step: the 2-step outcome window outlives the
+    # episode, so the outcome must surface as explicitly unresolved (B3)
+    env = make_env(
+        [{}],
+        action_error_on_steps={0},
+    )
+    task = TaskSpec(benchmark="fake", task_id="t", seed=0, max_steps=1)
+    runner = make_runner(tmp_path, env, ["click(bid='1')"], max_steps=1)
+    result = runner.run(task, run_id="c12")
+
+    assert result.recovery_count == 1
+    assert result.recovery_success_count == 0
+    assert result.recovery_failed_count == 0
+    assert result.recovery_unresolved_count == 1
+    assert (
+        result.recovery_success_count
+        + result.recovery_failed_count
+        + result.recovery_unresolved_count
+        == result.recovery_count
+    )
+
+
+# -- C13 / R1: WAIT recovery itself restores state -> outcome correct ----------
+
+
+def test_c13_wait_recovery_fingerprint_reference(tmp_path):
+    # invalid observation -> WAIT_AND_REOBSERVE -> the recovery noop itself
+    # restores a valid page; the NEXT agent action changes nothing. The
+    # outcome must still be success because the fingerprint moved away from
+    # the recovery-start fingerprint (R1), not because of the last action.
+    env = make_env(
+        [{}, {"observation": OBS_B}, {"reward": 1.0, "terminated": True,
+                                     "observation": OBS_B}],
+        empty_observation_on_steps={0},
+    )
+    runner = make_runner(
+        tmp_path, env, ["click(bid='1')", "click(bid='2')"]
+    )
+    result = runner.run(TASK, run_id="c13")
+
+    assert result.success
+    assert result.recovery_count == 1
+    assert result.recovery_environment_actions == 1
+    # recovery-start fingerprint (invalid obs) != current fingerprint
+    # (valid obs), even though the last agent action changed nothing
+    assert result.recovery_success_count == 1
+    assert result.recovery_failed_count == 0
+    assert result.recovery_unresolved_count == 0
+    assert (
+        result.recovery_success_count
+        + result.recovery_failed_count
+        + result.recovery_unresolved_count
+        == result.recovery_count
+    )
+
+
+# -- R4: TASK_FAILED short-circuit produces a deterministic policy event -------
+
+
+def test_c6b_task_failed_short_circuit_policy_event(tmp_path):
+    env = make_env([{"terminated": True, "reward": 0.0}])
+    runner = make_runner(tmp_path, env, ["click(bid='1')"])
+    result = runner.run(TASK, run_id="c6b")
+
+    assert result.status == RunStatus.FAILED
+    events = events_of(result)
+    aborts = [
+        e for e in events
+        if e.event_type.value == "policy_decision" and e.outcome == "abort"
+    ]
+    assert len(aborts) == 1
+    assert aborts[0].data.get("short_circuited") is True
+    assert aborts[0].data.get("failure_kind") == "TASK_FAILED"
+
+
+# -- B1: canonical recovery budget path used by runtime/config/renderer --------
+
+
+def test_b1_recovery_budget_single_config_path():
+    from web_harness.core.reliability import default_budget_from_config
+
+    # canonical: reliability.recovery.max_recoveries_per_episode
+    budget = default_budget_from_config({
+        "recovery": {"max_recoveries_per_episode": 7},
+        "budget": {"max_recoveries_per_episode": 99},
+    })
+    assert budget.max_recoveries_per_episode == 7
+
+
+def test_b1_recovery_config_fail_fast():
+    from web_harness.core.errors import ConfigError
+
+    base = {
+        "model": {"provider": "mock"},
+        "agent": {"type": "baseline"},
+        "runtime": {"max_steps": 5},
+        "trace": {"root_dir": "runs"},
+        "environment": {},
+        "reliability": {
+            "enabled": True,
+            "recovery": {"enabled": True},
+        },
+    }
+    HarnessConfig(base)  # valid
+
+    bad_cases = [
+        ("reliability.recovery.enabled must be a boolean",
+         {"recovery": {"enabled": "yes"}}),
+        ("max_recoveries_per_episode must be an int >= 0",
+         {"recovery": {"enabled": True, "max_recoveries_per_episode": -1}}),
+        ("wait_ms must be an int >= 0",
+         {"recovery": {"enabled": True, "wait_ms": -5}}),
+        ("block_steps must be an int >= 1",
+         {"recovery": {"enabled": True, "block_steps": 0}}),
+    ]
+    for _msg, recovery in bad_cases:
+        data = {**base, "reliability": {"enabled": True, **recovery}}
+        with pytest.raises(ConfigError):
+            HarnessConfig(data)
 
 
 # -- regression: recovery disabled -> Phase 1B behavior unchanged --------------

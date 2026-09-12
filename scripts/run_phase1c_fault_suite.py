@@ -118,6 +118,18 @@ def main() -> int:
             "blocked_executed_once": executed.count("click(bid='1')") == 1,
             "redecide_event_recorded":
                 "redecide_with_feedback" in event_outcomes(events, "recovery"),
+            "event_has_trigger_identity": any(
+                e.event_type.value == "recovery"
+                and e.data.get("failure_kind") == "ACTION_ERROR"
+                and e.data.get("failure_signature")
+                for e in events
+            ),
+            "outcome_invariant": (
+                result.recovery_success_count
+                + result.recovery_failed_count
+                + result.recovery_unresolved_count
+                == result.recovery_count
+            ),
         },
     }
     scenarios.append(data)
@@ -202,16 +214,26 @@ def main() -> int:
         "status": result.status.value,
         "error_type": result.error_type.value if result.error_type else None,
         "recovery_count": result.recovery_count,
+        "recovery_failed_count": result.recovery_failed_count,
+        "recovery_unresolved_count": result.recovery_unresolved_count,
         "steps": result.num_steps,
         "expected": "controlled RECOVERY_FAILED abort at the budget boundary "
-                    "(3 recoveries), never an unbounded loop",
+                    "(3 recoveries), never an unbounded loop; no phantom "
+                    "recovery failure from the abort itself",
         "assertions": {
             "not_success": not result.success,
             "recovery_failed_error":
                 result.error_type == ErrorType.RECOVERY_FAILED,
             "budget_respected": result.recovery_count == 3,
+            "no_phantom_failure": result.recovery_failed_count == 3,
             "bounded_steps": result.num_steps == 4,
             "no_recovery_env_actions": result.recovery_environment_actions == 0,
+            "outcome_invariant": (
+                result.recovery_success_count
+                + result.recovery_failed_count
+                + result.recovery_unresolved_count
+                == result.recovery_count
+            ),
         },
     }
     scenarios.append(data)
@@ -275,14 +297,18 @@ def main() -> int:
         "scenario": "C7 blocked action re-selected",
         "status": result.status.value,
         "recovery_count": result.recovery_count,
+        "blocked_action_redecision_count": result.blocked_action_redecision_count,
         "steps": result.num_steps,
         "executed_actions": executed,
         "expected": "success; the re-selected blocked action never enters "
-                    "env.step; re-decision consumes recovery budget",
+                    "env.step; re-decision counted separately from "
+                    "recovery_count but still guard/budget constrained",
         "assertions": {
             "success": result.success,
             "blocked_never_reexecuted": executed.count("click(bid='1')") == 1,
-            "two_recoveries": result.recovery_count == 2,
+            "one_actual_recovery": result.recovery_count == 1,
+            "redecision_counted_separately":
+                result.blocked_action_redecision_count == 1,
             "redecide_event_recorded": "blocked_action_selected"
             in event_outcomes(events, "recovery"),
             "final_step_action": steps[-1].action == "click(bid='2')",
@@ -313,6 +339,161 @@ def main() -> int:
             "one_recovery_env_action": result.recovery_environment_actions == 1,
             "one_agent_step": result.num_steps == 1,
             "recovered_episode": result.recovered_episode,
+        },
+    }
+    scenarios.append(data)
+
+    # C9: budget exhausted + clean PASS -> CONTINUE (budget never kills a
+    # normal step)
+    result, executed, (events, steps) = run_recovery_episode(
+        name="C9", script=[{}, {}, {},
+                           {"reward": 1.0, "terminated": True,
+                            "observation": OBS_B}],
+        actions=[f"click(bid='{i}')" for i in range(1, 5)],
+        injection={"action_error_on_steps": {0, 1, 2}},
+        tmp_root=out_dir,
+    )
+    data = {
+        "scenario": "C9 budget exhausted + clean PASS -> continue",
+        "status": result.status.value,
+        "recovery_count": result.recovery_count,
+        "steps": result.num_steps,
+        "policy_outcomes": event_outcomes(events, "policy_decision"),
+        "expected": "success after the budget is exhausted: a clean step "
+                    "must continue normally",
+        "assertions": {
+            "success": result.success,
+            "three_recoveries": result.recovery_count == 3,
+            "no_abort_after_budget": "abort"
+            not in event_outcomes(events, "policy_decision"),
+            "continued_after_budget": (
+                event_outcomes(events, "policy_decision")[:3]
+                == ["recover", "recover", "recover"]
+                and result.num_steps == 4
+            ),
+        },
+    }
+    scenarios.append(data)
+
+    # C10: budget exhausted + single NO_PROGRESS -> CONTINUE
+    result, executed, (events, steps) = run_recovery_episode(
+        name="C10", script=[{}, {}, {}, {},
+                            {"reward": 1.0, "terminated": True,
+                             "observation": OBS_B}],
+        actions=[f"click(bid='{i}')" for i in range(1, 6)],
+        injection={"action_error_on_steps": {0, 1, 2}},
+        tmp_root=out_dir,
+    )
+    data = {
+        "scenario": "C10 budget exhausted + no_progress -> continue",
+        "status": result.status.value,
+        "recovery_count": result.recovery_count,
+        "steps": result.num_steps,
+        "policy_outcomes": event_outcomes(events, "policy_decision"),
+        "expected": "a single NO_PROGRESS under an exhausted budget still "
+                    "continues; the episode then succeeds",
+        "assertions": {
+            "success": result.success,
+            "three_recoveries": result.recovery_count == 3,
+            "continued_after_budget": "continue"
+            in event_outcomes(events, "policy_decision")[3:],
+        },
+    }
+    scenarios.append(data)
+
+    # C11: budget exhausted + ACTION_ERROR -> controlled abort
+    result, executed, (events, steps) = run_recovery_episode(
+        name="C11", script=[{}],
+        actions=[f"click(bid='{i}')" for i in range(1, 9)],
+        injection={"action_error_on_steps": set(range(20))},
+        max_steps=8, budget=3,
+        tmp_root=out_dir,
+    )
+    data = {
+        "scenario": "C11 budget exhausted + action_error -> abort",
+        "status": result.status.value,
+        "error_type": result.error_type.value if result.error_type else None,
+        "recovery_count": result.recovery_count,
+        "recovery_failed_count": result.recovery_failed_count,
+        "steps": result.num_steps,
+        "expected": "an exhausted budget blocks starting a NEW recoverable "
+                    "recovery -> controlled RECOVERY_FAILED abort",
+        "assertions": {
+            "not_success": not result.success,
+            "recovery_failed_error":
+                result.error_type == ErrorType.RECOVERY_FAILED,
+            "budget_respected": result.recovery_count == 3,
+            "no_phantom_failure": result.recovery_failed_count == 3,
+            "outcome_invariant": (
+                result.recovery_success_count
+                + result.recovery_failed_count
+                + result.recovery_unresolved_count
+                == result.recovery_count
+            ),
+        },
+    }
+    scenarios.append(data)
+
+    # C12: pending recovery finalized (as unresolved) when the episode ends
+    result, executed, (events, steps) = run_recovery_episode(
+        name="C12", script=[{}],
+        actions=["click(bid='1')"],
+        injection={"action_error_on_steps": {0}},
+        max_steps=1, budget=3,
+        tmp_root=out_dir,
+    )
+    data = {
+        "scenario": "C12 pending recovery finalized at episode end",
+        "status": result.status.value,
+        "recovery_count": result.recovery_count,
+        "recovery_success_count": result.recovery_success_count,
+        "recovery_failed_count": result.recovery_failed_count,
+        "recovery_unresolved_count": result.recovery_unresolved_count,
+        "expected": "a recovery on the last step is counted as explicitly "
+                    "unresolved, never silently lost",
+        "assertions": {
+            "one_recovery": result.recovery_count == 1,
+            "no_silent_success": result.recovery_success_count == 0,
+            "no_silent_failure": result.recovery_failed_count == 0,
+            "explicitly_unresolved": result.recovery_unresolved_count == 1,
+            "outcome_invariant": (
+                result.recovery_success_count
+                + result.recovery_failed_count
+                + result.recovery_unresolved_count
+                == result.recovery_count
+            ),
+        },
+    }
+    scenarios.append(data)
+
+    # C13 / R1: WAIT recovery itself restores state -> outcome correct
+    result, executed, (events, steps) = run_recovery_episode(
+        name="C13", script=[{}, {"observation": OBS_B},
+                            {"reward": 1.0, "terminated": True,
+                             "observation": OBS_B}],
+        actions=["click(bid='1')", "click(bid='2')"],
+        injection={"empty_observation_on_steps": {0}},
+        tmp_root=out_dir,
+    )
+    data = {
+        "scenario": "C13 wait recovery restores state (fingerprint reference)",
+        "status": result.status.value,
+        "recovery_count": result.recovery_count,
+        "recovery_success_count": result.recovery_success_count,
+        "recovery_environment_actions": result.recovery_environment_actions,
+        "steps": result.num_steps,
+        "expected": "the recovery noop itself moves the state away from the "
+                    "recovery-start fingerprint; the next agent action "
+                    "changes nothing, yet the outcome is success (R1)",
+        "assertions": {
+            "success": result.success,
+            "one_recovery": result.recovery_count == 1,
+            "one_recovery_env_action": result.recovery_environment_actions == 1,
+            "recovery_success_counted": result.recovery_success_count == 1,
+            "no_failed_no_unresolved": (
+                result.recovery_failed_count == 0
+                and result.recovery_unresolved_count == 0
+            ),
         },
     }
     scenarios.append(data)

@@ -34,7 +34,7 @@ from web_harness.core.errors import ErrorType, HarnessError
 from web_harness.core.events import RuntimeEvent, RuntimeEventType, new_event_id
 from web_harness.core.ids import new_run_id, now_utc_iso
 from web_harness.core.models import RunResult, RunStatus, StepRecord, TaskSpec
-from web_harness.core.reliability import ReliabilityBudget
+from web_harness.core.reliability import FailureKind, ReliabilityBudget
 from web_harness.env.base import EnvironmentAdapter
 from web_harness.observability.trace import TraceRecorder
 from web_harness.reliability.fingerprint import fingerprint_of
@@ -191,6 +191,9 @@ class EpisodeRunner:
             episode_recovery_env_actions = 0
             episode_recovery_latency_s = 0.0
             episode_recovered = False  # recovery triggered AND episode success
+            # blocked-action re-selections are counted separately from
+            # recoveries (R3): no directive is created, env.step is skipped
+            episode_blocked_action_redecisions = 0
 
             def emit_runtime_event(fields: dict) -> None:
                 recorder.record_event(
@@ -243,14 +246,17 @@ class EpisodeRunner:
 
             def evaluate_pending_recoveries(
                 *,
-                state_changed: bool | None,
+                current_fingerprint: str,
                 task_success: bool,
                 current_signatures: list[str],
             ) -> None:
                 """Local recovery success evaluation (deterministic, bounded):
-                within 2 agent steps after a recovery, state fingerprint
-                changed OR task success AND no repeat of the same failure
-                signature -> success; otherwise -> failure."""
+                within 2 agent steps after a recovery, moving away from the
+                recovery-start fingerprint OR task success AND no repeat of
+                the same failure signature -> success; otherwise -> failure.
+                The recovery-start fingerprint (not the last action's own
+                pre/post delta) is the reference so a recovery that itself
+                restored page state is judged correctly (R1)."""
                 nonlocal episode_recovery_success_count
                 nonlocal episode_recovery_failed_count
                 still_pending = []
@@ -260,6 +266,7 @@ class EpisodeRunner:
                     repeated = any(
                         s.signature == signature for s in current_signatures
                     )
+                    state_changed = current_fingerprint != pending["pre_fingerprint"]
                     if (state_changed or task_success) and not repeated:
                         episode_recovery_success_count += 1
                     elif pending["steps_observed"] >= 2 or repeated:
@@ -296,15 +303,20 @@ class EpisodeRunner:
                         break
                     if action_is_blocked(decision_result.turn.decision.action):
                         # controlled recovery outcome: no env.step for the
-                        # blocked action; one re-decision, budget-constrained
+                        # blocked action; one re-decision. This is NOT a new
+                        # recovery (no directive is created/executed) — it is
+                        # counted separately as a blocked-action re-decision
+                        # and bounded by the same recovery budget as an
+                        # anti-loop guard.
                         if (
                             state.reliability.recovery_count
+                            >= self.recovery_budget.max_recoveries_per_episode
+                            or episode_blocked_action_redecisions
                             >= self.recovery_budget.max_recoveries_per_episode
                         ):
                             recovery_budget_exhausted = True
                             break
-                        state.reliability.recovery_count += 1
-                        episode_recovery_count += 1
+                        episode_blocked_action_redecisions += 1
                         emit_runtime_event(
                             {
                                 "event_type": "recovery",
@@ -314,7 +326,8 @@ class EpisodeRunner:
                                 "data": {
                                     "blocked_action": decision_result.turn.decision.action,
                                     "reason": "agent selected a blocked action; "
-                                    "re-deciding within recovery budget",
+                                    "re-deciding (counted separately from "
+                                    "recovery_count)",
                                 },
                             }
                         )
@@ -322,14 +335,14 @@ class EpisodeRunner:
                     break
 
                 if recovery_budget_exhausted:
-                    # a blocked action must never reach env.step; budget is
-                    # exhausted so re-deciding is no longer possible
-                    episode_recovery_failed_count += 1
+                    # a blocked action must never reach env.step; the guard
+                    # is exhausted so re-deciding is no longer possible. The
+                    # refusal to re-decide is not itself a recovery failure.
                     step = self._failed_decision_step(
                         state, step_idx, observation,
                         ErrorType.RECOVERY_FAILED,
-                        HarnessError("recovery budget exhausted with a blocked "
-                                     "action selected"),
+                        HarnessError("blocked-action re-decision guard "
+                                     "exhausted"),
                     )
                     recorder.record_step(step, observation=observation)
                     state.steps.append(step)
@@ -488,9 +501,7 @@ class EpisodeRunner:
                     and state.reliability.pending_recovery_evaluations
                 ):
                     evaluate_pending_recoveries(
-                        state_changed=verification.state_changed
-                        if verification_summary is not None
-                        else None,
+                        current_fingerprint=fingerprint_of(observation),
                         task_success=bool(
                             env_step.terminated and env_step.reward > 0
                         ),
@@ -501,8 +512,37 @@ class EpisodeRunner:
                 # an active directive governs exactly one agent step
                 expire_recovery_directive()
 
-                # terminate?
+                # terminate? Environment terminal has the HIGHEST priority:
+                # it short-circuits the policy entirely. TASK_FAILED is
+                # therefore terminal-short-circuited by the runner before the
+                # policy could decide — record the deterministic ABORT
+                # decision as an event for a consistent trace, but never
+                # enter recovery for a terminal environment state (R4).
                 if env_step.terminated:
+                    if (
+                        self.failure_policy is not None
+                        and verification_summary is not None
+                        and any(
+                            s.kind == FailureKind.TASK_FAILED
+                            for s in verification.signals
+                        )
+                    ):
+                        emit_runtime_event(
+                            {
+                                "event_type": "policy_decision",
+                                "step_index": step_idx,
+                                "component": "failure_policy_engine",
+                                "outcome": "abort",
+                                "data": {
+                                    "reason": "TASK_FAILED is "
+                                    "terminal-short-circuited by "
+                                    "EpisodeRunner; environment terminal "
+                                    "is final",
+                                    "failure_kind": "TASK_FAILED",
+                                    "short_circuited": True,
+                                },
+                            }
+                        )
                     status = RunStatus.SUCCESS if env_step.reward > 0 else RunStatus.FAILED
                     error_type = ErrorType.TASK_TERMINATED
                     if status == RunStatus.SUCCESS and episode_recovery_count > 0:
@@ -538,7 +578,8 @@ class EpisodeRunner:
                         }
                     )
                     if policy_decision.action == PolicyAction.ABORT:
-                        episode_recovery_failed_count += 1
+                        # refusing to START another recovery is not itself a
+                        # recovery failure: no phantom outcome is added (B3)
                         error_type = ErrorType.RECOVERY_FAILED
                         error_message = policy_decision.reason
                         break
@@ -592,6 +633,14 @@ class EpisodeRunner:
                 status = RunStatus.MAX_STEPS_REACHED
                 error_type = ErrorType.MAX_STEPS_EXCEEDED
 
+            # finalize pending recovery outcomes: an episode that ends before
+            # its 2-step evaluation window completes must not lose them
+            # silently (B3) — they are counted as explicitly unresolved.
+            episode_recovery_unresolved_count = len(
+                state.reliability.pending_recovery_evaluations
+            )
+            state.reliability.pending_recovery_evaluations = []
+
             if error_type is None and status == RunStatus.ERROR:
                 error_type = ErrorType.UNKNOWN_ERROR
 
@@ -609,9 +658,11 @@ class EpisodeRunner:
                 recovery_count=episode_recovery_count,
                 recovery_success_count=episode_recovery_success_count,
                 recovery_failed_count=episode_recovery_failed_count,
+                recovery_unresolved_count=episode_recovery_unresolved_count,
                 recovered_episode=episode_recovered,
                 recovery_environment_actions=episode_recovery_env_actions,
                 recovery_latency_s=episode_recovery_latency_s,
+                blocked_action_redecisions=episode_blocked_action_redecisions,
             )
         finally:
             # the environment must be closed on every path
@@ -668,9 +719,11 @@ class EpisodeRunner:
         recovery_count: int = 0,
         recovery_success_count: int = 0,
         recovery_failed_count: int = 0,
+        recovery_unresolved_count: int = 0,
         recovered_episode: bool = False,
         recovery_environment_actions: int = 0,
         recovery_latency_s: float = 0.0,
+        blocked_action_redecisions: int = 0,
         retry_count: int = 0,
         retry_cycle_count: int = 0,
         retry_success_count: int = 0,
@@ -723,9 +776,11 @@ class EpisodeRunner:
             recovery_count=recovery_count,
             recovery_success_count=recovery_success_count,
             recovery_failed_count=recovery_failed_count,
+            recovery_unresolved_count=recovery_unresolved_count,
             recovered_episode=recovered_episode,
             recovery_environment_actions=recovery_environment_actions,
             recovery_latency_s=recovery_latency_s,
+            blocked_action_redecision_count=blocked_action_redecisions,
         )
         recorder.write_result(result)
         return result

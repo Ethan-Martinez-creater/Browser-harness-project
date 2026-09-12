@@ -59,7 +59,12 @@ class RecoveryKind(StrEnum):
 
 
 class RecoveryDirective(BaseModel):
-    """Data contract for a recovery directive (executed in Phase 1C)."""
+    """Data contract for a recovery directive (executed in Phase 1C).
+
+    `failure_kind` / `failure_signature` carry the trigger identity of the
+    verified failure that produced this directive, so recovery events can be
+    audited without reverse-parsing reason text.
+    """
 
     kind: RecoveryKind
     reason: str
@@ -67,6 +72,8 @@ class RecoveryDirective(BaseModel):
     blocked_actions: list[str] = Field(default_factory=list)
     wait_ms: int | None = None
     expires_after_agent_steps: int = 1
+    failure_kind: FailureKind | None = None
+    failure_signature: str | None = None
 
 
 class RecoveryPlan(BaseModel):

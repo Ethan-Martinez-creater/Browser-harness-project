@@ -13,8 +13,13 @@ These results are NOT mixed with natural MiniWoB success rates.
 | C4 persistent action_error -> budget exhausted | PASS | error | 3 | 0 | RECOVERY_FAILED |
 | C5 single no_progress -> continue | PASS | success | 0 | 0 | - |
 | C6 task_failed is final | PASS | failed | 0 | 0 | TASK_TERMINATED |
-| C7 blocked action re-selected | PASS | success | 2 | 0 | - |
+| C7 blocked action re-selected | PASS | success | 1 | 0 | - |
 | C8 recovery noop terminates the task | PASS | success | 1 | 1 | - |
+| C9 budget exhausted + clean PASS -> continue | PASS | success | 3 | 0 | - |
+| C10 budget exhausted + no_progress -> continue | PASS | success | 3 | 0 | - |
+| C11 budget exhausted + action_error -> abort | PASS | error | 3 | 0 | RECOVERY_FAILED |
+| C12 pending recovery finalized at episode end | PASS | max_steps_reached | 1 | 0 | - |
+| C13 wait recovery restores state (fingerprint reference) | PASS | success | 1 | 1 | - |
 
 **Suite result: ALL PASS**
 

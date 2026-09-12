@@ -103,6 +103,7 @@ class HarnessConfig:
                 raise ConfigError("verification.enabled must be a boolean")
         if reliability_enabled:
             self._validate_retry_config(self.reliability.get("retry") or {})
+            self._validate_recovery_config(self.reliability.get("recovery") or {})
             budget_cfg = self.reliability.get("budget") or {}
             if "max_extra_model_calls_per_episode" in budget_cfg:
                 value = budget_cfg["max_extra_model_calls_per_episode"]
@@ -155,6 +156,33 @@ class HarnessConfig:
             )
         # NOTE: when api_max_retries > len(backoff_ms), the LAST backoff value
         # is reused for all remaining retries (deliberate, deterministic).
+
+    @classmethod
+    def _validate_recovery_config(cls, recovery_cfg: dict[str, Any]) -> None:
+        """Fail-fast validation of the recovery section (Phase 1C remediation).
+
+        CANONICAL budget path: `reliability.recovery.max_recoveries_per_episode`
+        (the runtime budget builder, persisted configs and the renderer all
+        read this one location — never `reliability.budget.*`).
+        """
+        if not recovery_cfg:
+            return
+        enabled = recovery_cfg.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ConfigError("reliability.recovery.enabled must be a boolean")
+
+        def _int_field(name: str, minimum: int) -> None:
+            if name not in recovery_cfg:
+                return
+            value = recovery_cfg[name]
+            if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+                raise ConfigError(
+                    f"reliability.recovery.{name} must be an int >= {minimum}"
+                )
+
+        _int_field("max_recoveries_per_episode", 0)
+        _int_field("wait_ms", 0)
+        _int_field("block_steps", 1)
 
     @classmethod
     def _validate_no_literal_secrets(cls, data: dict[str, Any]) -> None:

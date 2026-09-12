@@ -33,8 +33,10 @@ def episode_metrics(result: RunResult) -> dict:
         "recovery_count": result.recovery_count,
         "recovery_success_count": result.recovery_success_count,
         "recovery_failed_count": result.recovery_failed_count,
+        "recovery_unresolved_count": result.recovery_unresolved_count,
         "recovery_environment_actions": result.recovery_environment_actions,
         "recovery_latency_s": round(result.recovery_latency_s, 3),
+        "blocked_action_redecision_count": result.blocked_action_redecision_count,
         "retry_count": result.retry_count,
         "retry_cycle_count": result.retry_cycle_count,
         "retry_success_count": result.retry_success_count,
@@ -108,14 +110,21 @@ def aggregate_metrics(results: list[RunResult]) -> dict:
         "total_retry_latency_s": round(
             sum(r.retry_latency_s for r in results), 3
         ),
-        # reliability (Phase 1C recovery)
+        # reliability (Phase 1C recovery). Invariant: success + failed +
+        # unresolved == total_recovery_count (no phantom outcomes).
         "total_recovery_count": sum(r.recovery_count for r in results),
         "episodes_with_recovery": sum(1 for r in results if r.recovery_count > 0),
         "recovery_success_count": sum(r.recovery_success_count for r in results),
         "recovery_failed_count": sum(r.recovery_failed_count for r in results),
+        "recovery_unresolved_count": sum(
+            r.recovery_unresolved_count for r in results
+        ),
         "recovered_episode_count": sum(1 for r in results if r.recovered_episode),
         "recovery_environment_actions": sum(
             r.recovery_environment_actions for r in results
+        ),
+        "blocked_action_redecision_count": sum(
+            r.blocked_action_redecision_count for r in results
         ),
         "total_recovery_latency_s": round(
             sum(r.recovery_latency_s for r in results), 3

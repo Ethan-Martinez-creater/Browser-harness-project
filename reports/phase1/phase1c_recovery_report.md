@@ -97,26 +97,33 @@ events.jsonl); tokens of failed attempts are included in episode totals.
 ## Recovery layer metrics (Phase 1C)
 
 - recovery enabled: True
+- recovery.max_recoveries_per_episode: 3 (canonical recovery budget path)
 - recovery.wait_ms (WAIT_AND_REOBSERVE noop wait): 500
 - recovery.block_steps (REDECIDE_WITH_FEEDBACK block): 1
-- budget.max_recoveries_per_episode: 3
+- budget.max_extra_model_calls_per_episode: 6
 
 | metric | value |
 |---|---:|
 | total_recovery_count | 3 |
 | recovery_success_count | 2 |
 | recovery_failed_count | 1 |
+| recovery_unresolved_count | 0 |
 | episodes_with_recovery | 2 |
 | recovered_episode_count | 2 |
 | recovery_environment_actions | 0 |
+| blocked_action_redecision_count | 0 |
 | total_recovery_latency_s | 0.219 |
 
 Recovery scope guarantees: recovery is triggered only by the
-deterministic rule policy over verified failure signals; a recovery
-environment action (WAIT_AND_REOBSERVE noop) is never counted as an
-Agent step and never becomes a StepRecord; blocked actions never
-reach env.step; recovery is bounded by max_recoveries_per_episode and
-independent of the Phase 1B extra-model-call budget.
+deterministic rule policy over verified failure signals; an
+exhausted budget never kills a PASS / single-NO_PROGRESS step; a
+recovery environment action (WAIT_AND_REOBSERVE noop) is never
+counted as an Agent step and never becomes a StepRecord; blocked
+actions never reach env.step (re-selections are counted separately
+as blocked_action_redecision_count); success + failed + unresolved
+sum to total_recovery_count; recovery is bounded by
+recovery.max_recoveries_per_episode and independent of the Phase 1B
+extra-model-call budget.
 
 `estimated_cost` is null by design: the harness never guesses prices without a reliable price table; token counts above are the authoritative usage record.
 
@@ -150,6 +157,27 @@ independent of the Phase 1B extra-model-call budget.
    `recovery_failed_count`. Bounded and deterministic, no LLM judgment.
 6. `estimated_cost` is null by design; token counts above are the
    authoritative usage record.
+
+## Remediation note (Phase 1C closure review)
+
+This smoke run was produced by the pre-remediation runtime. The remediation
+changed recovery accounting semantics without changing the real execution
+trajectory (identical policy decisions, model calls and environment actions):
+
+- `recovery_count` now counts created/executed RecoveryDirectives only;
+  blocked-action re-selections are counted separately as
+  `blocked_action_redecision_count` (the machine result above predates this
+  split, so its per-episode `recovery_count` may include what is now a
+  re-decision).
+- local outcomes are evaluated against the recovery-start fingerprint and
+  episodes may report `recovery_unresolved_count`; `recovery_success_count +
+  recovery_failed_count + recovery_unresolved_count == recovery_count`.
+- the recovery budget moved to its canonical config path
+  `reliability.recovery.max_recoveries_per_episode`.
+
+The full C1-C13 deterministic fault suite (`phase1c_fault_suite.json`) was
+re-run against the remediated runtime and passes, including the new budget /
+outcome / fingerprint semantics.
 
 ## Reproduction
 

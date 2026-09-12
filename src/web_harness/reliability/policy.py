@@ -64,7 +64,10 @@ class FailurePolicyEngine:
     ) -> PolicyDecision:
         kinds = {s.kind for s in signals}
 
-        # environment terminal is final: no recovery, no reset
+        # environment terminal is final: no recovery, no reset. NOTE: in the
+        # runtime this branch is short-circuited by EpisodeRunner (the
+        # environment terminal check runs before the policy), so a TASK_FAILED
+        # ABORT here is a defensive duplicate of the runner's terminal path.
         if FailureKind.TASK_FAILED in kinds:
             return PolicyDecision(
                 action=PolicyAction.ABORT,
@@ -73,17 +76,21 @@ class FailurePolicyEngine:
                 failure_kind=FailureKind.TASK_FAILED,
             )
 
-        # recovery budget: no new recovery once exhausted (controlled abort)
-        if reliability_state.recovery_count >= budget.max_recoveries_per_episode:
-            return PolicyDecision(
-                action=PolicyAction.ABORT,
-                reason="recovery budget exhausted "
-                f"({reliability_state.recovery_count} >= "
-                f"{budget.max_recoveries_per_episode})",
-                failure_kind=_priority_kind(kinds),
+        # budget only forbids STARTING a new recovery — it must never kill a
+        # step that can continue normally (PASS or single NO_PROGRESS).
+        def budget_available() -> bool:
+            return (
+                reliability_state.recovery_count < budget.max_recoveries_per_episode
             )
 
         if FailureKind.ACTION_ERROR in kinds:
+            if not budget_available():
+                return PolicyDecision(
+                    action=PolicyAction.ABORT,
+                    reason="recovery budget exhausted; cannot start another "
+                    "recovery for the failed browser action",
+                    failure_kind=FailureKind.ACTION_ERROR,
+                )
             return PolicyDecision(
                 action=PolicyAction.RECOVER,
                 reason="browser action failed; re-decide with feedback",
@@ -91,6 +98,8 @@ class FailurePolicyEngine:
                 directive=RecoveryDirective(
                     kind=RecoveryKind.REDECIDE_WITH_FEEDBACK,
                     reason="previous browser action failed",
+                    failure_kind=FailureKind.ACTION_ERROR,
+                    failure_signature=_signature_of(signals, FailureKind.ACTION_ERROR),
                     feedback=(
                         "Previous browser action failed.\n\n"
                         f"Failure:\n{_failure_summary(signals, FailureKind.ACTION_ERROR)}\n\n"
@@ -105,6 +114,12 @@ class FailurePolicyEngine:
             )
 
         if FailureKind.OBSERVATION_INVALID in kinds:
+            if not budget_available():
+                return PolicyDecision(
+                    action=PolicyAction.ABORT,
+                    reason="recovery budget exhausted; cannot re-observe",
+                    failure_kind=FailureKind.OBSERVATION_INVALID,
+                )
             return PolicyDecision(
                 action=PolicyAction.RECOVER,
                 reason="observation unusable; wait and re-observe",
@@ -112,11 +127,22 @@ class FailurePolicyEngine:
                 directive=RecoveryDirective(
                     kind=RecoveryKind.WAIT_AND_REOBSERVE,
                     reason="observation invalid; harness waits and re-observes",
+                    failure_kind=FailureKind.OBSERVATION_INVALID,
+                    failure_signature=_signature_of(
+                        signals, FailureKind.OBSERVATION_INVALID
+                    ),
                     wait_ms=self.wait_ms,
                 ),
             )
 
         if FailureKind.LOOP_DETECTED in kinds:
+            if not budget_available():
+                return PolicyDecision(
+                    action=PolicyAction.ABORT,
+                    reason="recovery budget exhausted; cannot break the loop "
+                    "with another recovery",
+                    failure_kind=FailureKind.LOOP_DETECTED,
+                )
             return PolicyDecision(
                 action=PolicyAction.RECOVER,
                 reason="same state/action transition repeated without progress",
@@ -124,6 +150,8 @@ class FailurePolicyEngine:
                 directive=RecoveryDirective(
                     kind=RecoveryKind.BLOCK_REPEATED_ACTION,
                     reason="previous transition repeated without progress",
+                    failure_kind=FailureKind.LOOP_DETECTED,
+                    failure_signature=_signature_of(signals, FailureKind.LOOP_DETECTED),
                     feedback=(
                         "The previous transition repeated without progress.\n\n"
                         "Do not repeat the blocked action.\n"
@@ -135,12 +163,20 @@ class FailurePolicyEngine:
                 ),
             )
 
-        # single NO_PROGRESS (or clean pass): continue
+        # single NO_PROGRESS (or clean pass): continue — even when the
+        # recovery budget is exhausted (budget never kills normal execution)
         return PolicyDecision(
             action=PolicyAction.CONTINUE,
             reason="no recoverable environment-side failure",
             failure_kind=_priority_kind(kinds),
         )
+
+
+def _signature_of(signals: list[FailureSignal], kind: FailureKind) -> str | None:
+    for signal in signals:
+        if signal.kind == kind:
+            return signal.signature
+    return None
 
 
 def _failure_summary(signals: list[FailureSignal], kind: FailureKind) -> str:
