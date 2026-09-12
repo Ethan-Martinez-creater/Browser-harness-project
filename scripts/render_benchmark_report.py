@@ -74,6 +74,20 @@ PROFILES = {
         "reliability": True,
         "retry": True,
     },
+    "phase1c": {
+        "title": "# Phase 1C Recovery Policy Report",
+        "scope": [
+            "> **Scope warning**: this is the Phase 1C engineering smoke run.",
+            "It validates environment-side recovery (rule-based policy over",
+            "verified failure signals, budget-bounded WAIT_AND_REOBSERVE /",
+            "REDECIDE_WITH_FEEDBACK / BLOCK_REPEATED_ACTION) on the natural",
+            "MiniWoB workload. It is not a model-capability conclusion, and",
+            "no browser action is ever blindly retried.",
+        ],
+        "reliability": True,
+        "retry": True,
+        "recovery": True,
+    },
 }
 
 
@@ -146,6 +160,7 @@ def render_retry_metrics(summary: dict) -> list[str]:
         "| metric | value |",
         "|---|---:|",
         f"| total_retry_count | {agg.get('total_retry_count', 0)} |",
+        f"| retry_cycle_count | {agg.get('retry_cycle_count', 0)} |",
         f"| episodes_with_retry | {agg.get('episodes_with_retry', 0)} |",
         f"| retry_success_count | {agg.get('retry_success_count', 0)} |",
         f"| retry_exhausted_count | {agg.get('retry_exhausted_count', 0)} |",
@@ -159,6 +174,46 @@ def render_retry_metrics(summary: dict) -> list[str]:
         "are retried; browser actions are never retried; retries never add an",
         "Agent step (one Agent action = one StepRecord, retries live in",
         "events.jsonl); tokens of failed attempts are included in episode totals.",
+        "",
+    ]
+    return lines
+
+
+def render_recovery_metrics(summary: dict) -> list[str]:
+    agg = summary["aggregate"]
+    config = summary.get("config", {})
+    reliability_cfg = config.get("reliability") or {}
+    recovery_cfg = reliability_cfg.get("recovery") or {}
+    budget_cfg = reliability_cfg.get("budget") or {}
+    lines = [
+        "## Recovery layer metrics (Phase 1C)",
+        "",
+        f"- recovery enabled: {recovery_cfg.get('enabled', False)}",
+        f"- recovery.wait_ms (WAIT_AND_REOBSERVE noop wait): "
+        f"{recovery_cfg.get('wait_ms', 500)}",
+        f"- recovery.block_steps (REDECIDE_WITH_FEEDBACK block): "
+        f"{recovery_cfg.get('block_steps', 1)}",
+        f"- budget.max_recoveries_per_episode: "
+        f"{budget_cfg.get('max_recoveries_per_episode', 3)}",
+        "",
+        "| metric | value |",
+        "|---|---:|",
+        f"| total_recovery_count | {agg.get('total_recovery_count', 0)} |",
+        f"| recovery_success_count | {agg.get('recovery_success_count', 0)} |",
+        f"| recovery_failed_count | {agg.get('recovery_failed_count', 0)} |",
+        f"| episodes_with_recovery | {agg.get('episodes_with_recovery', 0)} |",
+        f"| recovered_episode_count | {agg.get('recovered_episode_count', 0)} |",
+        f"| recovery_environment_actions | "
+        f"{agg.get('recovery_environment_actions', 0)} |",
+        f"| total_recovery_latency_s | "
+        f"{fmt_num(agg.get('total_recovery_latency_s', 0.0))} |",
+        "",
+        "Recovery scope guarantees: recovery is triggered only by the",
+        "deterministic rule policy over verified failure signals; a recovery",
+        "environment action (WAIT_AND_REOBSERVE noop) is never counted as an",
+        "Agent step and never becomes a StepRecord; blocked actions never",
+        "reach env.step; recovery is bounded by max_recoveries_per_episode and",
+        "independent of the Phase 1B extra-model-call budget.",
         "",
     ]
     return lines
@@ -235,6 +290,8 @@ def render(summary: dict, episodes: list[dict], profile: str) -> str:
         lines.extend(render_reliability_metrics(summary))
     if p.get("retry"):
         lines.extend(render_retry_metrics(summary))
+    if p.get("recovery"):
+        lines.extend(render_recovery_metrics(summary))
     lines.append(
         "`estimated_cost` is null by design: the harness never guesses prices "
         "without a reliable price table; token counts above are the "

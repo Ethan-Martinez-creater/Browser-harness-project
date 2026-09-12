@@ -38,11 +38,13 @@ class BaselineAgent:
         history: list[StepRecord],
         action_contract: ActionContract,
         repair_feedback: str | None = None,
+        recovery_directive=None,
     ) -> tuple[AgentTurn, PromptBundle]:
         """Return the decision plus the exact prompt used (for tracing).
 
         `repair_feedback` is set only by format-repair retries (Phase 1B);
-        the normal path stays identical to Phase 0/1A.
+        `recovery_directive` only by environment recovery (Phase 1C). The
+        normal path stays identical to Phase 0/1A/1B.
         """
         prompt = self.prompt_builder.build(
             task=task,
@@ -50,6 +52,7 @@ class BaselineAgent:
             history=history,
             action_contract=action_contract,
             repair_feedback=repair_feedback,
+            recovery_directive=recovery_directive,
         )
         model_output = self.model_adapter.generate_action(
             task=task,

@@ -1,0 +1,13 @@
+run_id,benchmark,task_id,seed,status,success,final_reward,steps,duration_s,input_tokens,output_tokens,action_error_count,error_type,verification_count,verifications_with_signal,failure_signal_count,recovery_count,recovery_success_count,recovery_failed_count,recovery_environment_actions,recovery_latency_s,retry_count,retry_cycle_count,retry_success_count,retry_exhausted_count,extra_model_calls,retry_input_tokens,retry_output_tokens,retry_latency_s
+run-20260912T121838Z-2d4b1b16,miniwob,click-test,0,success,True,1.0,1,48.594,1405,29,0,TASK_TERMINATED,1,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0.0
+run-20260912T121929Z-4aab23f0,miniwob,click-button,0,success,True,1.0,1,19.657,1449,48,0,TASK_TERMINATED,1,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0.0
+run-20260912T121950Z-1b084989,miniwob,enter-text,0,success,True,1.0,2,14.75,2866,110,0,TASK_TERMINATED,2,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0.0
+run-20260912T122007Z-72caadfe,miniwob,choose-list,0,success,True,1.0,1,8.781,1498,44,0,TASK_TERMINATED,1,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0.0
+run-20260912T122016Z-769c75a3,miniwob,click-checkboxes,0,success,True,1.0,2,26.11,2989,75,0,TASK_TERMINATED,2,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0.0
+run-20260912T122044Z-eeefe08e,miniwob,click-link,0,success,True,1.0,6,146.375,9365,13854,2,TASK_TERMINATED,6,5,5,2,1,1,0,0.203,0,0,0,0,0,0,0,0.0
+run-20260912T122311Z-c1094e50,miniwob,login-user,0,success,True,1.0,3,20.594,4518,193,0,TASK_TERMINATED,3,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0.0
+run-20260912T122333Z-b380c522,miniwob,read-table,0,success,True,1.0,2,13.954,3160,124,0,TASK_TERMINATED,2,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0.0
+run-20260912T122347Z-78487b58,miniwob,navigate-tree,0,success,True,1.0,1,8.719,1481,96,0,TASK_TERMINATED,1,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0.0
+run-20260912T122356Z-70022f33,miniwob,use-autocomplete,0,success,True,1.0,4,25.437,6044,521,0,TASK_TERMINATED,4,1,1,0,0,0,0,0.0,0,0,0,0,0,0,0,0.0
+run-20260912T122424Z-50a3711a,miniwob,choose-date-easy,0,success,True,1.0,4,22.062,7860,309,1,TASK_TERMINATED,4,1,1,1,1,0,0,0.016,0,0,0,0,0,0,0,0.0
+run-20260912T122447Z-cc5fe9fa,miniwob,order-food,0,failed,False,0.0,3,626.578,5625,16960,0,TASK_TERMINATED,3,3,3,0,0,0,0,0.0,2,1,1,0,2,1867,10225,329.672

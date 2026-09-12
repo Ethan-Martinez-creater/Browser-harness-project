@@ -195,10 +195,11 @@ def run_benchmark(
 
     # Phase 1B: controlled retry for model-side failures only; disabled by
     # default (baseline configs never enable it).
+    from web_harness.core.reliability import default_budget_from_config
+
     retry_cfg = cfg.reliability.get("retry") or {}
     decision_executor = None
     if cfg.reliability_enabled and retry_cfg.get("enabled", False):
-        from web_harness.core.reliability import default_budget_from_config
         from web_harness.reliability.retry import RetryPolicy
         from web_harness.runtime.decision_executor import DecisionExecutor
 
@@ -211,6 +212,18 @@ def run_benchmark(
                 parse_max_retries=int(output_cfg.get("max_retries", 1)),
             ),
             budget=default_budget_from_config(cfg.reliability),
+        )
+
+    # Phase 1C: rule-based policy + RecoveryManager for environment-side
+    # failures; disabled by default (Phase 1B behavior unchanged).
+    recovery_cfg = cfg.reliability.get("recovery") or {}
+    failure_policy = None
+    if cfg.reliability_enabled and recovery_cfg.get("enabled", False):
+        from web_harness.reliability.policy import FailurePolicyEngine
+
+        failure_policy = FailurePolicyEngine(
+            wait_ms=int(recovery_cfg.get("wait_ms", 500)),
+            block_steps=int(recovery_cfg.get("block_steps", 1)),
         )
 
     for task_id in tasks:
@@ -234,6 +247,8 @@ def run_benchmark(
                 verifier=verifier,
                 verification_mode=cfg.verification_mode,
                 decision_executor=decision_executor,
+                failure_policy=failure_policy,
+                recovery_budget=default_budget_from_config(cfg.reliability),
             )
             logger.info("episode start: %s seed=%s", task.task_id, seed)
             result = runner.run(task, run_id=new_run_id())

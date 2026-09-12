@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from web_harness.reliability.policy import FailurePolicyEngine
     from web_harness.reliability.verifier import StepVerifier
 
 from web_harness.agents.base import Agent
@@ -33,10 +34,22 @@ from web_harness.core.errors import ErrorType, HarnessError
 from web_harness.core.events import RuntimeEvent, RuntimeEventType, new_event_id
 from web_harness.core.ids import new_run_id, now_utc_iso
 from web_harness.core.models import RunResult, RunStatus, StepRecord, TaskSpec
+from web_harness.core.reliability import ReliabilityBudget
 from web_harness.env.base import EnvironmentAdapter
 from web_harness.observability.trace import TraceRecorder
+from web_harness.reliability.fingerprint import fingerprint_of
+from web_harness.reliability.policy import PolicyAction
+from web_harness.reliability.recovery import RecoveryManager
 from web_harness.runtime.decision_executor import DecisionExecutor
 from web_harness.runtime.state import RunState
+
+
+def _priority_signature(signals) -> str | None:
+    """Most important failure signature of a verification pass."""
+    for signal in signals:
+        if signal.severity.value == "error":
+            return signal.signature
+    return signals[0].signature if signals else None
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +84,8 @@ class EpisodeRunner:
         verifier: StepVerifier | None = None,
         verification_mode: str = "shadow",
         decision_executor: DecisionExecutor | None = None,
+        failure_policy: FailurePolicyEngine | None = None,
+        recovery_budget: ReliabilityBudget | None = None,
     ):
         self.agent = agent
         self.env = env
@@ -87,6 +102,10 @@ class EpisodeRunner:
         # Phase 1B: the executor wraps agent.decide with controlled model-side
         # retries. Default executor has retry disabled → identical to Phase 0.
         self.decision_executor = decision_executor or DecisionExecutor()
+        # Phase 1C: rule-based policy + RecoveryManager for environment-side
+        # failures. None = recovery off (Phase 1B behavior unchanged).
+        self.failure_policy = failure_policy
+        self.recovery_budget = recovery_budget or ReliabilityBudget()
 
     # -- main entry ---------------------------------------------------------
 
@@ -165,6 +184,13 @@ class EpisodeRunner:
             episode_retry_input_tokens = 0
             episode_retry_output_tokens = 0
             episode_retry_latency_s = 0.0
+            # Phase 1C recovery accounting
+            episode_recovery_count = 0
+            episode_recovery_success_count = 0
+            episode_recovery_failed_count = 0
+            episode_recovery_env_actions = 0
+            episode_recovery_latency_s = 0.0
+            episode_recovered = False  # recovery triggered AND episode success
 
             def emit_runtime_event(fields: dict) -> None:
                 recorder.record_event(
@@ -188,24 +214,130 @@ class EpisodeRunner:
                     return None
                 return recorder.write_failed_attempt(**kwargs)
 
+            recovery_manager = (
+                RecoveryManager(event_sink=emit_runtime_event)
+                if self.failure_policy is not None
+                else None
+            )
+
+            def normalize_action(action: str | None) -> str:
+                return (action or "").strip()
+
+            def action_is_blocked(action: str | None) -> bool:
+                directive = state.reliability.active_recovery_directive
+                if directive is None:
+                    return False
+                normalized = normalize_action(action)
+                return any(
+                    normalize_action(blocked) == normalized
+                    for blocked in directive.blocked_actions
+                )
+
+            def expire_recovery_directive() -> None:
+                directive = state.reliability.active_recovery_directive
+                if directive is None:
+                    return
+                directive.expires_after_agent_steps -= 1
+                if directive.expires_after_agent_steps <= 0:
+                    state.reliability.active_recovery_directive = None
+
+            def evaluate_pending_recoveries(
+                *,
+                state_changed: bool | None,
+                task_success: bool,
+                current_signatures: list[str],
+            ) -> None:
+                """Local recovery success evaluation (deterministic, bounded):
+                within 2 agent steps after a recovery, state fingerprint
+                changed OR task success AND no repeat of the same failure
+                signature -> success; otherwise -> failure."""
+                nonlocal episode_recovery_success_count
+                nonlocal episode_recovery_failed_count
+                still_pending = []
+                for pending in state.reliability.pending_recovery_evaluations:
+                    pending["steps_observed"] += 1
+                    signature = pending["signature"]
+                    repeated = any(
+                        s.signature == signature for s in current_signatures
+                    )
+                    if (state_changed or task_success) and not repeated:
+                        episode_recovery_success_count += 1
+                    elif pending["steps_observed"] >= 2 or repeated:
+                        episode_recovery_failed_count += 1
+                    else:
+                        still_pending.append(pending)
+                state.reliability.pending_recovery_evaluations = still_pending
+
             # -- explicit harness loop ------------------------------------
             for step_idx in range(task.max_steps):
                 t0 = time.monotonic()
+                recovery_budget_exhausted = False
 
                 # decide (on the pre-action observation); the executor wraps
                 # the model call with controlled retries for model-side
-                # failures only — it never performs environment actions
-                decision_result = self.decision_executor.execute(
-                    agent=self.agent,
-                    task=task,
-                    observation=observation,
-                    history=state.steps,
-                    action_contract=action_contract,
-                    reliability_state=state.reliability,
-                    event_sink=emit_runtime_event,
-                    attempt_sink=attempt_sink,
-                    step_index=step_idx,
-                )
+                # failures only — it never performs environment actions.
+                # A blocked action from an active recovery directive can
+                # NEVER reach env.step: re-decide within recovery budget.
+                while True:
+                    recovery_directive = state.reliability.active_recovery_directive
+                    decision_result = self.decision_executor.execute(
+                        agent=self.agent,
+                        task=task,
+                        observation=observation,
+                        history=state.steps,
+                        action_contract=action_contract,
+                        reliability_state=state.reliability,
+                        event_sink=emit_runtime_event,
+                        attempt_sink=attempt_sink,
+                        step_index=step_idx,
+                        recovery_directive=recovery_directive,
+                    )
+                    if not decision_result.success:
+                        break
+                    if action_is_blocked(decision_result.turn.decision.action):
+                        # controlled recovery outcome: no env.step for the
+                        # blocked action; one re-decision, budget-constrained
+                        if (
+                            state.reliability.recovery_count
+                            >= self.recovery_budget.max_recoveries_per_episode
+                        ):
+                            recovery_budget_exhausted = True
+                            break
+                        state.reliability.recovery_count += 1
+                        episode_recovery_count += 1
+                        emit_runtime_event(
+                            {
+                                "event_type": "recovery",
+                                "step_index": step_idx,
+                                "component": "recovery_manager",
+                                "outcome": "blocked_action_selected",
+                                "data": {
+                                    "blocked_action": decision_result.turn.decision.action,
+                                    "reason": "agent selected a blocked action; "
+                                    "re-deciding within recovery budget",
+                                },
+                            }
+                        )
+                        continue
+                    break
+
+                if recovery_budget_exhausted:
+                    # a blocked action must never reach env.step; budget is
+                    # exhausted so re-deciding is no longer possible
+                    episode_recovery_failed_count += 1
+                    step = self._failed_decision_step(
+                        state, step_idx, observation,
+                        ErrorType.RECOVERY_FAILED,
+                        HarnessError("recovery budget exhausted with a blocked "
+                                     "action selected"),
+                    )
+                    recorder.record_step(step, observation=observation)
+                    state.steps.append(step)
+                    error_type = ErrorType.RECOVERY_FAILED
+                    error_message = "recovery budget exhausted with a blocked " \
+                        "action selected; refusing to execute it"
+                    break
+
                 episode_retry_count += decision_result.retry_count
                 if decision_result.retry_count > 0:
                     episode_retry_cycle_count += 1
@@ -350,15 +482,112 @@ class EpisodeRunner:
                 observation = env_step.observation
                 final_reward = env_step.reward
 
+                # evaluate pending local-recovery outcomes against this step
+                if (
+                    self.failure_policy is not None
+                    and state.reliability.pending_recovery_evaluations
+                ):
+                    evaluate_pending_recoveries(
+                        state_changed=verification.state_changed
+                        if verification_summary is not None
+                        else None,
+                        task_success=bool(
+                            env_step.terminated and env_step.reward > 0
+                        ),
+                        current_signatures=verification.signals
+                        if verification_summary is not None
+                        else [],
+                    )
+                # an active directive governs exactly one agent step
+                expire_recovery_directive()
+
                 # terminate?
                 if env_step.terminated:
                     status = RunStatus.SUCCESS if env_step.reward > 0 else RunStatus.FAILED
                     error_type = ErrorType.TASK_TERMINATED
+                    if status == RunStatus.SUCCESS and episode_recovery_count > 0:
+                        episode_recovered = True
                     break
                 if env_step.truncated:
                     status = RunStatus.TRUNCATED
                     error_type = ErrorType.TASK_TRUNCATED
                     break
+
+                # policy: deterministic rules over verified failure signals;
+                # CONTINUE keeps the loop untouched, RECOVER/ABORT only run
+                # when the policy layer is configured (Phase 1C)
+                if self.failure_policy is not None and verification_summary is not None:
+                    policy_decision = self.failure_policy.decide(
+                        signals=verification.signals,
+                        failed_action=turn.decision.action,
+                        reliability_state=state.reliability,
+                        budget=self.recovery_budget,
+                    )
+                    emit_runtime_event(
+                        {
+                            "event_type": "policy_decision",
+                            "step_index": step_idx,
+                            "component": "failure_policy_engine",
+                            "outcome": policy_decision.action.value,
+                            "data": {
+                                "reason": policy_decision.reason,
+                                "failure_kind": policy_decision.failure_kind.value
+                                if policy_decision.failure_kind
+                                else None,
+                            },
+                        }
+                    )
+                    if policy_decision.action == PolicyAction.ABORT:
+                        episode_recovery_failed_count += 1
+                        error_type = ErrorType.RECOVERY_FAILED
+                        error_message = policy_decision.reason
+                        break
+                    if policy_decision.action == PolicyAction.RECOVER:
+                        recovery_result = recovery_manager.recover(
+                            directive=policy_decision.directive,
+                            task=task,
+                            observation=observation,
+                            failed_action=turn.decision.action,
+                            env=self.env,
+                            reliability_state=state.reliability,
+                            step_index=step_idx,
+                        )
+                        episode_recovery_count += 1
+                        episode_recovery_env_actions += recovery_result.environment_actions
+                        episode_recovery_latency_s += recovery_result.latency_s
+                        if recovery_result.terminal:
+                            # the recovery noop itself ended the task: accept
+                            # the environment's real terminal semantics
+                            env_step = recovery_result.environment_step
+                            final_reward = env_step.reward
+                            status = (
+                                RunStatus.SUCCESS
+                                if env_step.terminated and env_step.reward > 0
+                                else RunStatus.TRUNCATED if env_step.truncated
+                                else RunStatus.FAILED
+                            )
+                            error_type = ErrorType.TASK_TERMINATED
+                            if status == RunStatus.SUCCESS:
+                                episode_recovered = True
+                            break
+                        if recovery_result.error_type:
+                            episode_recovery_failed_count += 1
+                        # remember this recovery for local success evaluation
+                        state.reliability.pending_recovery_evaluations.append(
+                            {
+                                "signature": _priority_signature(
+                                    verification.signals
+                                ),
+                                "steps_observed": 0,
+                                "pre_fingerprint": fingerprint_of(observation),
+                            }
+                        )
+                        state.reliability.last_recovery_failure_signature = (
+                            _priority_signature(verification.signals)
+                        )
+                        # the recovery observation drives the next decision
+                        observation = recovery_result.observation
+                        state.current_observation = observation
             else:
                 status = RunStatus.MAX_STEPS_REACHED
                 error_type = ErrorType.MAX_STEPS_EXCEEDED
@@ -377,6 +606,12 @@ class EpisodeRunner:
                 retry_input_tokens=episode_retry_input_tokens,
                 retry_output_tokens=episode_retry_output_tokens,
                 retry_latency_s=episode_retry_latency_s,
+                recovery_count=episode_recovery_count,
+                recovery_success_count=episode_recovery_success_count,
+                recovery_failed_count=episode_recovery_failed_count,
+                recovered_episode=episode_recovered,
+                recovery_environment_actions=episode_recovery_env_actions,
+                recovery_latency_s=episode_recovery_latency_s,
             )
         finally:
             # the environment must be closed on every path
@@ -430,6 +665,12 @@ class EpisodeRunner:
         started_at: str,
         run_dir: Path,
         final_reward: float = 0.0,
+        recovery_count: int = 0,
+        recovery_success_count: int = 0,
+        recovery_failed_count: int = 0,
+        recovered_episode: bool = False,
+        recovery_environment_actions: int = 0,
+        recovery_latency_s: float = 0.0,
         retry_count: int = 0,
         retry_cycle_count: int = 0,
         retry_success_count: int = 0,
@@ -479,6 +720,12 @@ class EpisodeRunner:
             retry_input_tokens=retry_input_tokens,
             retry_output_tokens=retry_output_tokens,
             retry_latency_s=retry_latency_s,
+            recovery_count=recovery_count,
+            recovery_success_count=recovery_success_count,
+            recovery_failed_count=recovery_failed_count,
+            recovered_episode=recovered_episode,
+            recovery_environment_actions=recovery_environment_actions,
+            recovery_latency_s=recovery_latency_s,
         )
         recorder.write_result(result)
         return result

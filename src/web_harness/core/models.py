@@ -167,6 +167,13 @@ class RunResult(BaseModel):
     retry_input_tokens: int = 0
     retry_output_tokens: int = 0
     retry_latency_s: float = 0.0
+    # Phase 1C recovery accounting (totals over the whole episode)
+    recovery_count: int = 0
+    recovery_success_count: int = 0
+    recovery_failed_count: int = 0
+    recovered_episode: bool = False
+    recovery_environment_actions: int = 0
+    recovery_latency_s: float = 0.0
 
 
 def json_dump(model: BaseModel) -> str:

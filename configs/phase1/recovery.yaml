@@ -1,0 +1,82 @@
+# Phase 1C: environment-side Recovery Policy.
+# verification = shadow, retry = enabled (model-side), recovery = enabled
+# (rule-based policy over verified failure signals). Replanning NOT implemented.
+
+reliability:
+  enabled: true
+
+  verification:
+    enabled: true
+    mode: shadow
+
+    no_progress:
+      enabled: true
+
+    loop:
+      enabled: true
+      consecutive_threshold: 2
+
+  retry:
+    enabled: true
+
+    model_api:
+      max_retries: 2          # 1 initial attempt + 2 retries = 3 calls max
+      backoff_ms:
+        - 500
+        - 1000
+
+    model_output:
+      max_retries: 1          # one format-repair retry
+
+  recovery:
+    enabled: true
+    wait_ms: 500              # WAIT_AND_REOBSERVE harness noop wait
+    block_steps: 1            # REDECIDE_WITH_FEEDBACK blocks the failed action
+
+  budget:
+    max_extra_model_calls_per_episode: 6
+    max_recoveries_per_episode: 3
+
+model:
+  provider: openai_compatible
+  model: deepseek-flash
+  base_url_env: MODEL_BASE_URL
+  api_key_env: MODEL_API_KEY
+  temperature: 0.0
+  timeout_s: 120
+
+agent:
+  type: baseline
+  max_history_steps: 4
+  observation_char_limit: 30000
+
+runtime:
+  max_steps: 20
+
+trace:
+  root_dir: runs
+  save_prompts: true
+  save_model_responses: true
+  save_screenshots: false
+
+environment:
+  bootstrap_action: "noop(wait_ms=500)"
+  headless: true
+
+benchmark:
+  benchmark: miniwob
+  tasks:
+    - click-test
+    - click-button
+    - enter-text
+    - choose-list
+    - click-checkboxes
+    - click-link
+    - login-user
+    - read-table
+    - navigate-tree
+    - use-autocomplete
+    - choose-date-easy
+    - order-food
+  seeds:
+    - 0

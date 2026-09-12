@@ -145,6 +145,7 @@ class DecisionExecutor:
         event_sink: Callable[[dict], None] | None = None,
         attempt_sink: Callable[..., str | None] | None = None,
         step_index: int | None = None,
+        recovery_directive=None,
     ) -> DecisionExecutionResult:
         """Run one decision cycle: initial attempt + controlled model-side
         retries. Emits retry events when a sink is provided; persists failed
@@ -185,6 +186,7 @@ class DecisionExecutor:
                     history=history,
                     action_contract=action_contract,
                     repair_feedback=repair_feedback,
+                    recovery_directive=recovery_directive,
                 )
             except ModelApiError as exc:
                 result.attempts += 1

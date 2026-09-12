@@ -9,6 +9,7 @@ digest, the available action schema and the required output format.
 from __future__ import annotations
 
 from web_harness.core.models import Observation, PromptBundle, StepRecord, TaskSpec
+from web_harness.core.reliability import RecoveryDirective
 from web_harness.env.action_contract import ActionContract
 
 OUTPUT_FORMAT = """\
@@ -57,6 +58,7 @@ class PromptBuilder:
         history: list[StepRecord],
         action_contract: ActionContract,
         repair_feedback: str | None = None,
+        recovery_directive: RecoveryDirective | None = None,
     ) -> PromptBundle:
         system = (
             "You are a careful web automation agent. You complete the given "
@@ -85,4 +87,15 @@ class PromptBuilder:
         if repair_feedback:
             # minimal format-repair feedback only (no reflection, no replanning)
             user += f"\n\n# Format correction\n{repair_feedback}"
+        if recovery_directive is not None:
+            # environment-recovery feedback is a separate, typed channel
+            lines = ["# Reliability recovery feedback"]
+            if recovery_directive.feedback:
+                lines.append(recovery_directive.feedback)
+            if recovery_directive.blocked_actions:
+                lines.append(
+                    "Blocked actions (do NOT execute these this step): "
+                    + ", ".join(recovery_directive.blocked_actions)
+                )
+            user += "\n\n".join(["\n".join(lines)])
         return PromptBundle(system=system, user=user)

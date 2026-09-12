@@ -138,3 +138,70 @@ def test_rendered_report_matches_committed_report(tmp_path):
     if notes_path.exists():
         rebuilt += "\n" + notes_path.read_text(encoding="utf-8").strip() + "\n"
     assert rebuilt == committed.read_text(encoding="utf-8")
+
+
+def make_summary_with_retry_recovery() -> dict:
+    summary = make_summary()
+    summary["config"]["reliability"]["retry"] = {
+        "enabled": True,
+        "model_api": {"max_retries": 2, "backoff_ms": [500, 1000]},
+        "model_output": {"max_retries": 1},
+    }
+    summary["config"]["reliability"]["recovery"] = {
+        "enabled": True,
+        "wait_ms": 500,
+        "block_steps": 1,
+    }
+    summary["config"]["reliability"]["budget"] = {
+        "max_extra_model_calls_per_episode": 6,
+        "max_recoveries_per_episode": 3,
+    }
+    summary["aggregate"].update({
+        "total_retry_count": 4,
+        "retry_cycle_count": 3,
+        "episodes_with_retry": 2,
+        "retry_success_count": 2,
+        "retry_exhausted_count": 0,
+        "retry_success_rate": 2 / 3,
+        "total_extra_model_calls": 4,
+        "total_retry_input_tokens": 10,
+        "total_retry_output_tokens": 5,
+        "total_retry_latency_s": 1.5,
+        "total_recovery_count": 2,
+        "recovery_success_count": 1,
+        "recovery_failed_count": 1,
+        "episodes_with_recovery": 1,
+        "recovered_episode_count": 1,
+        "recovery_environment_actions": 1,
+        "total_recovery_latency_s": 0.5,
+    })
+    return summary
+
+
+def test_phase1b_retry_section_includes_cycle_count():
+    r = load_renderer()
+    report = r.render(make_summary_with_retry_recovery(), make_episodes(), "phase1b")
+    assert "retry_cycle_count | 3" in report
+    assert "retry_success_rate | 0.667" in report
+    # the Phase 1B profile has no recovery section
+    assert "Recovery layer metrics" not in report
+
+
+def test_phase1c_profile_renders_recovery_metrics():
+    r = load_renderer()
+    report = r.render(make_summary_with_retry_recovery(), make_episodes(), "phase1c")
+    assert report.startswith("# Phase 1C Recovery Policy Report")
+    assert "## Recovery layer metrics (Phase 1C)" in report
+    assert "recovery enabled: True" in report
+    assert "| total_recovery_count | 2 |" in report
+    assert "| recovery_success_count | 1 |" in report
+    assert "| recovery_failed_count | 1 |" in report
+    assert "| episodes_with_recovery | 1 |" in report
+    assert "| recovered_episode_count | 1 |" in report
+    assert "| recovery_environment_actions | 1 |" in report
+    assert "| total_recovery_latency_s | 0.500 |" in report
+    assert "budget.max_recoveries_per_episode: 3" in report
+    # phase1c also keeps the verification and retry sections
+    assert "Verification layer metrics" in report
+    assert "Retry layer metrics" in report
+    assert "blocked actions never" in report

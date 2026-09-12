@@ -28,7 +28,7 @@ class ScriptedClickAgent:
 
     def decide(
         self, *, task, observation: Observation, history: list[StepRecord],
-        action_contract, repair_feedback=None,
+        action_contract, repair_feedback=None, recovery_directive=None,
     ):
         import re
 

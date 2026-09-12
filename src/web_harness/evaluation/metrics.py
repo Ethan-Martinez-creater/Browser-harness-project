@@ -30,6 +30,11 @@ def episode_metrics(result: RunResult) -> dict:
         "verification_count": result.verification_count,
         "verifications_with_signal": result.verifications_with_signal,
         "failure_signal_count": result.failure_signal_count,
+        "recovery_count": result.recovery_count,
+        "recovery_success_count": result.recovery_success_count,
+        "recovery_failed_count": result.recovery_failed_count,
+        "recovery_environment_actions": result.recovery_environment_actions,
+        "recovery_latency_s": round(result.recovery_latency_s, 3),
         "retry_count": result.retry_count,
         "retry_cycle_count": result.retry_cycle_count,
         "retry_success_count": result.retry_success_count,
@@ -102,5 +107,17 @@ def aggregate_metrics(results: list[RunResult]) -> dict:
         "total_retry_output_tokens": sum(r.retry_output_tokens for r in results),
         "total_retry_latency_s": round(
             sum(r.retry_latency_s for r in results), 3
+        ),
+        # reliability (Phase 1C recovery)
+        "total_recovery_count": sum(r.recovery_count for r in results),
+        "episodes_with_recovery": sum(1 for r in results if r.recovery_count > 0),
+        "recovery_success_count": sum(r.recovery_success_count for r in results),
+        "recovery_failed_count": sum(r.recovery_failed_count for r in results),
+        "recovered_episode_count": sum(1 for r in results if r.recovered_episode),
+        "recovery_environment_actions": sum(
+            r.recovery_environment_actions for r in results
+        ),
+        "total_recovery_latency_s": round(
+            sum(r.recovery_latency_s for r in results), 3
         ),
     }

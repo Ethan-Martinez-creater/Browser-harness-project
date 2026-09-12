@@ -8,7 +8,10 @@ deliberately out of scope for the Phase 0 baseline.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from web_harness.core.reliability import RecoveryDirective
 
 from pydantic import BaseModel
 
@@ -33,10 +36,12 @@ class Agent(Protocol):
         history: list[StepRecord],
         action_contract: ActionContract,
         repair_feedback: str | None = None,
+        recovery_directive: RecoveryDirective | None = None,
     ) -> tuple[AgentTurn, PromptBundle]:
         """Return the decision plus the exact prompt used (for tracing).
 
-        `repair_feedback` is set only by format-repair retries (Phase 1B);
-        it is None on the normal path.
+        `repair_feedback` is set only by format-repair retries (Phase 1B).
+        `recovery_directive` is set only by environment-side recovery
+        (Phase 1C); the two feedback channels are intentionally separate.
         """
         ...

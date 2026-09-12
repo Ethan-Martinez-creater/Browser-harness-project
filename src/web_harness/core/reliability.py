@@ -94,6 +94,10 @@ class ReliabilityState(BaseModel):
     extra_model_calls: int = 0
     active_recovery_directive: RecoveryDirective | None = None
     active_recovery_plan: RecoveryPlan | None = None
+    # Phase 1C: local recovery success evaluation (bounded, deterministic).
+    # Each entry: {"signature", "steps_observed", "pre_fingerprint"}.
+    pending_recovery_evaluations: list[dict] = Field(default_factory=list)
+    last_recovery_failure_signature: str | None = None
 
     def record_failure(self, signal: FailureSignal) -> None:
         self.failure_counts[signal.signature] = (

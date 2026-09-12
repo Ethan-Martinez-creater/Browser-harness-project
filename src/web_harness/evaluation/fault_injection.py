@@ -12,12 +12,14 @@ from collections.abc import Callable
 
 from web_harness.core.errors import ModelApiError, ModelOutputParseError
 from web_harness.core.models import (
+    EnvironmentStep,
     ModelOutput,
     Observation,
     PromptBundle,
     StepRecord,
     TaskSpec,
 )
+from web_harness.env.action_contract import ActionContract
 from web_harness.models.base import ModelAdapter
 
 
@@ -77,3 +79,67 @@ class FaultInjectingModelAdapter:
         return self.wrapped.generate_action(
             task=task, observation=observation, history=history, prompt=prompt
         )
+
+
+class FaultInjectingEnvironmentAdapter:
+    """Environment-side fault wrapper (Phase 1C). See module docstring."""
+
+    def __init__(
+        self,
+        wrapped,
+        *,
+        action_error_on_steps: set[int] | None = None,
+        empty_observation_on_steps: set[int] | None = None,
+        stale_observation_on_steps: set[int] | None = None,
+        action_error_text: str = "TimeoutError: injected environment fault",
+    ):
+        self.wrapped = wrapped
+        self.action_error_on_steps = action_error_on_steps or set()
+        self.empty_observation_on_steps = empty_observation_on_steps or set()
+        self.stale_observation_on_steps = stale_observation_on_steps or set()
+        self.action_error_text = action_error_text
+        self.step_count = 0
+        self.last_observation: Observation | None = None
+
+    def reset(self, task: TaskSpec) -> Observation:
+        obs = self.wrapped.reset(task)
+        self.last_observation = obs
+        self.step_count = 0
+        return obs
+
+    def close(self) -> None:
+        self.wrapped.close()
+
+    def action_contract(self) -> ActionContract:
+        return self.wrapped.action_contract()
+
+    @property
+    def bootstrap_action_executed(self):
+        return getattr(self.wrapped, "bootstrap_action_executed", None)
+
+    def step(self, action: str) -> EnvironmentStep:
+        step_index = self.step_count
+        self.step_count += 1
+        env_step = self.wrapped.step(action)
+
+        if step_index in self.action_error_on_steps:
+            env_step.action_error = self.action_error_text
+            # state unchanged: the failed action had no effect
+            if self.last_observation is not None:
+                env_step.observation = self.last_observation.model_copy(deep=True)
+                env_step.observation.last_action = action
+                env_step.observation.last_action_error = self.action_error_text
+
+        if step_index in self.empty_observation_on_steps:
+            env_step.observation = Observation(goal=env_step.observation.goal, url="")
+
+        if (
+            step_index in self.stale_observation_on_steps
+            and self.last_observation is not None
+        ):
+            stale = self.last_observation.model_copy(deep=True)
+            stale.last_action = action
+            env_step.observation = stale
+
+        self.last_observation = env_step.observation
+        return env_step
