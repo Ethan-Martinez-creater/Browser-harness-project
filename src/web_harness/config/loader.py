@@ -79,8 +79,21 @@ class HarnessConfig:
             self.runtime = data.get("runtime", {})
             self.trace = data.get("trace", {})
             self.environment = data.get("environment", {})
+            self.reliability = data.get("reliability", {})
         except KeyError as exc:
             raise ConfigError(f"missing config section: {exc}") from exc
+
+        if not isinstance(self.reliability, dict):
+            raise ConfigError("reliability config must be a mapping")
+        reliability_enabled = bool(self.reliability.get("enabled", False))
+        if self.reliability and not reliability_enabled:
+            # explicit disabled switch wins; ignore sub-sections entirely
+            self.reliability = {"enabled": False}
+        verifier_cfg = self.reliability.get("verification") or {}
+        if reliability_enabled and verifier_cfg:
+            mode = verifier_cfg.get("mode", "shadow")
+            if mode not in ("shadow", "active"):
+                raise ConfigError(f"unknown verification mode: {mode}")
 
         if self.model.get("provider") not in (None, "openai_compatible", "mock"):
             raise ConfigError(f"unknown model provider: {self.model.get('provider')}")
@@ -149,3 +162,12 @@ class HarnessConfig:
     @property
     def headless(self) -> bool:
         return bool(self.environment.get("headless", True))
+
+    @property
+    def reliability_enabled(self) -> bool:
+        return bool(self.reliability.get("enabled", False))
+
+    @property
+    def verification_mode(self) -> str:
+        verifier_cfg = self.reliability.get("verification") or {}
+        return str(verifier_cfg.get("mode", "shadow"))

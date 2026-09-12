@@ -76,6 +76,15 @@ Enforced invariants:
 6. **Step trace semantics.** `obs_N` is the pre-action decision input and
    matches `prompt_N`; `next_obs_N` is the post-action result, and
    `obs_(N+1) ≡ next_obs_N` (`trace_schema.md`).
+7. **Reliability is additive and off by default** (Phase 1A). The
+   verification engine (`reliability/`) runs in shadow mode: deterministic
+   detectors observe each step and write `events.jsonl` + StepRecord summary
+   fields, but never change the control flow. When `reliability.enabled` is
+   false, the runner behaves exactly like the Phase 0 baseline — no extra
+   model calls, environment actions, prompt content or step consumption
+   (enforced by `tests/regression/test_phase0_baseline_compat.py`).
+   Detection (what happened) is strictly separated from policy decisions
+   and from retry/recovery/replanning, which arrive in Phase 1B–1D.
 
 ## Data flow per step
 

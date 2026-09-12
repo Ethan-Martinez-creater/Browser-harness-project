@@ -9,6 +9,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from web_harness.core.models import Observation, RunStatus, StepRecord, TaskSpec
+from web_harness.core.reliability import ReliabilityState
 
 
 class RunState(BaseModel):
@@ -17,6 +18,7 @@ class RunState(BaseModel):
     status: RunStatus = RunStatus.RUNNING
     current_observation: Observation | None = None
     steps: list[StepRecord] = Field(default_factory=list)
+    reliability: ReliabilityState = Field(default_factory=ReliabilityState)
 
     @property
     def num_steps(self) -> int:

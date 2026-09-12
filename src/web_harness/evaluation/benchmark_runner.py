@@ -173,6 +173,21 @@ def run_benchmark(
                 bootstrap_action=cfg.bootstrap_action,
             )
 
+    # Phase 1A: verifier only when reliability is enabled (shadow mode);
+    # disabled means zero behavioral or cost delta vs the Phase 0 baseline.
+    verifier = None
+    if cfg.reliability_enabled:
+        from web_harness.reliability.verifier import DefaultStepVerifier
+
+        verifier_cfg = cfg.reliability.get("verification") or {}
+        no_progress_cfg = verifier_cfg.get("no_progress") or {}
+        loop_cfg = verifier_cfg.get("loop") or {}
+        verifier = DefaultStepVerifier(
+            detect_no_progress=bool(no_progress_cfg.get("enabled", True)),
+            detect_loop=bool(loop_cfg.get("enabled", True)),
+            loop_consecutive_threshold=int(loop_cfg.get("consecutive_threshold", 2)),
+        )
+
     for task_id in tasks:
         for seed in seeds:
             task = TaskSpec(
@@ -191,6 +206,7 @@ def run_benchmark(
                 model_provider=provider,
                 model_name=cfg.model.get("model"),
                 manifest_extra={"config_hash": cfg.hash},
+                verifier=verifier,
             )
             logger.info("episode start: %s seed=%s", task.task_id, seed)
             result = runner.run(task, run_id=new_run_id())

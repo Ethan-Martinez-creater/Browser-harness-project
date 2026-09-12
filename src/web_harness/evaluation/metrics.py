@@ -27,6 +27,8 @@ def episode_metrics(result: RunResult) -> dict:
         "output_tokens": result.output_tokens,
         "action_error_count": result.action_error_count,
         "error_type": result.error_type.value if result.error_type else None,
+        "verification_count": result.verification_count,
+        "failure_signal_count": result.failure_signal_count,
     }
 
 
@@ -37,6 +39,13 @@ def aggregate_metrics(results: list[RunResult]) -> dict:
     steps = [r.num_steps for r in results]
     durations = [r.duration_s for r in results]
     action_errors = [r.action_error_count for r in results]
+    verification_counts = [r.verification_count for r in results]
+    signal_counts = [r.failure_signal_count for r in results]
+    kind_counts: dict[str, int] = {}
+    for r in results:
+        for kind, count in r.failure_kind_counts.items():
+            kind_counts[kind] = kind_counts.get(kind, 0) + count
+    total_verifications = sum(verification_counts)
     return {
         "num_episodes": len(results),
         "success_rate": len(successes) / len(results),
@@ -50,4 +59,12 @@ def aggregate_metrics(results: list[RunResult]) -> dict:
         "action_error_rate": (
             statistics.fmean(1.0 if e > 0 else 0.0 for e in action_errors)
         ),
+        # reliability (Phase 1A verification, shadow mode)
+        "verification_count": total_verifications,
+        "failure_signal_count": sum(signal_counts),
+        "verification_signal_rate": (
+            sum(signal_counts) / total_verifications if total_verifications else 0.0
+        ),
+        "episodes_with_failure_signal": sum(1 for c in signal_counts if c > 0),
+        "failure_kind_counts": dict(sorted(kind_counts.items())),
     }

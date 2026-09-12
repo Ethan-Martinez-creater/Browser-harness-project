@@ -23,6 +23,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from web_harness.reliability.verifier import StepVerifier
 
 from web_harness.agents.base import Agent
 from web_harness.core.errors import (
@@ -31,6 +35,7 @@ from web_harness.core.errors import (
     ModelApiError,
     ModelOutputParseError,
 )
+from web_harness.core.events import RuntimeEvent, RuntimeEventType, new_event_id
 from web_harness.core.ids import new_run_id, now_utc_iso
 from web_harness.core.models import RunResult, RunStatus, StepRecord, TaskSpec
 from web_harness.env.base import EnvironmentAdapter
@@ -67,6 +72,7 @@ class EpisodeRunner:
         model_provider: str | None = None,
         model_name: str | None = None,
         manifest_extra: dict | None = None,
+        verifier: StepVerifier | None = None,
     ):
         self.agent = agent
         self.env = env
@@ -76,6 +82,9 @@ class EpisodeRunner:
         self.model_provider = model_provider
         self.model_name = model_name
         self.manifest_extra = manifest_extra or {}
+        # Phase 1A: verifier runs in shadow mode only — it observes and
+        # records, it never changes the control flow. None = fully off.
+        self.verifier = verifier
 
     # -- main entry ---------------------------------------------------------
 
@@ -199,6 +208,23 @@ class EpisodeRunner:
                     )
                 step_latency_ms = (time.monotonic() - t0) * 1000.0
 
+                # verify (shadow) BEFORE recording so the verification summary
+                # lands inside the StepRecord: observe and record only — no
+                # control flow changes, no extra model calls, no extra actions
+                verification_summary = None
+                failure_kinds: list[str] = []
+                if self.verifier is not None:
+                    verification = self.verifier.verify(
+                        task=task,
+                        pre_observation=observation,
+                        action=turn.decision.action,
+                        env_step=env_step,
+                        history=state.steps,
+                        reliability_state=state.reliability,
+                    )
+                    verification_summary = verification.status.value
+                    failure_kinds = sorted({s.kind.value for s in verification.signals})
+
                 # record: obs_N = what the model saw, next_obs_N = what the
                 # action produced (step-level failure, not episode failure)
                 mo = turn.model_output
@@ -221,6 +247,8 @@ class EpisodeRunner:
                         if env_step.action_error
                         else None
                     ),
+                    verification_status=verification_summary,
+                    failure_kinds=failure_kinds,
                 )
                 step = recorder.record_step(
                     step,
@@ -229,6 +257,30 @@ class EpisodeRunner:
                     prompt=prompt,
                     model_output=mo,
                 )
+
+                # event stream: detailed verification evidence (events.jsonl)
+                if verification_summary is not None:
+                    recorder.record_event(
+                        RuntimeEvent(
+                            event_id=new_event_id(),
+                            run_id=run_id,
+                            event_type=RuntimeEventType.VERIFICATION,
+                            step_index=step_idx,
+                            component="verification_engine",
+                            outcome=verification_summary,
+                            data={
+                                "mode": "shadow",
+                                "signals": [
+                                    s.model_dump(mode="json")
+                                    for s in verification.signals
+                                ],
+                                "pre_fingerprint": verification.pre_fingerprint,
+                                "post_fingerprint": verification.post_fingerprint,
+                                "state_changed": verification.state_changed,
+                            },
+                        )
+                    )
+
                 state.steps.append(step)
                 state.current_observation = env_step.observation
                 # the next decision must see what this action produced
@@ -291,6 +343,10 @@ class EpisodeRunner:
     ) -> RunResult:
         state.status = status
         duration = time.monotonic() - started
+        kind_counts: dict[str, int] = {}
+        for step in state.steps:
+            for kind in step.failure_kinds:
+                kind_counts[kind] = kind_counts.get(kind, 0) + 1
         result = RunResult(
             run_id=state.run_id,
             task_spec=state.task,
@@ -307,6 +363,11 @@ class EpisodeRunner:
             trace_path=str(run_dir),
             error_type=error_type,
             error_message=error_message,
+            verification_count=sum(
+                1 for s in state.steps if s.verification_status is not None
+            ),
+            failure_signal_count=state.reliability.total_failure_signals,
+            failure_kind_counts=kind_counts,
         )
         recorder.write_result(result)
         return result

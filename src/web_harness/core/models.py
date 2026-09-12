@@ -119,6 +119,9 @@ class StepRecord(BaseModel):
     model_name: str | None = None
     short_reason: str | None = None
     error_type: ErrorType | None = None
+    # Phase 1A verification summary (details live in events.jsonl)
+    verification_status: str | None = None
+    failure_kinds: list[str] = Field(default_factory=list)
 
 
 class RunResult(BaseModel):
@@ -140,6 +143,10 @@ class RunResult(BaseModel):
     trace_path: str | None = None
     error_type: ErrorType | None = None
     error_message: str | None = None
+    # Phase 1A verification summary (details live in events.jsonl)
+    verification_count: int = 0
+    failure_signal_count: int = 0
+    failure_kind_counts: dict[str, int] = Field(default_factory=dict)
 
 
 def json_dump(model: BaseModel) -> str:

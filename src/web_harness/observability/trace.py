@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 
 from web_harness.core.errors import TraceWriteError
+from web_harness.core.events import RuntimeEvent
 from web_harness.core.models import ModelOutput, Observation, PromptBundle, RunResult, StepRecord
 
 
@@ -63,6 +64,7 @@ class TraceRecorder:
         self.save_prompts = save_prompts
         self.save_model_responses = save_model_responses
         self._steps_path = self.run_dir / "steps.jsonl"
+        self._events_path = self.run_dir / "events.jsonl"
         try:
             self.artifact_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -148,6 +150,34 @@ class TraceRecorder:
         except OSError as exc:
             raise TraceWriteError(f"cannot append to {self._steps_path}: {exc}") from exc
         return step
+
+    # -- reliability event stream (events.jsonl) ---------------------------
+
+    def record_event(self, event: RuntimeEvent) -> RuntimeEvent:
+        """Append one runtime event (verification/policy/retry/...), fsynced."""
+        line = json.dumps(event.model_dump(mode="json"), ensure_ascii=False, default=str)
+        try:
+            self._events_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._events_path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+                f.flush()
+                import os
+
+                os.fsync(f.fileno())
+        except OSError as exc:
+            raise TraceWriteError(f"cannot append to {self._events_path}: {exc}") from exc
+        return event
+
+    @staticmethod
+    def read_events(run_dir: Path) -> list[RuntimeEvent]:
+        path = Path(run_dir) / "events.jsonl"
+        if not path.exists():
+            return []
+        events = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                events.append(RuntimeEvent.model_validate_json(line))
+        return events
 
     # -- read helpers (used by inspect-run and evaluation) -----------------
 

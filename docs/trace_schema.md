@@ -34,6 +34,28 @@ obs_N      →  prompt_N  →  model_N  →  action_N  →  next_obs_N
 before an action executes (e.g. `MODEL_OUTPUT_PARSE_ERROR`), `next_obs_N` is
 left unset — it is never fabricated.
 
+## Reliability event stream (Phase 1A)
+
+`events.jsonl` records what reliability components did, one `RuntimeEvent`
+per line (fsynced). It never changes the meaning of `steps.jsonl`.
+
+| Field | Type | Notes |
+|---|---|---|
+| event_id | str | unique per event |
+| run_id | str | matches the run directory |
+| timestamp | ISO-8601 UTC | |
+| event_type | str | `verification` / `policy_decision` / `retry` / `recovery` / `replan` / `budget` |
+| step_index | int? | agent step the event belongs to |
+| attempt_index | int? | for retries within one decision cycle |
+| component | str | emitting component, e.g. `verification_engine` |
+| outcome | str? | e.g. verification `pass` / `warning` / `fail` |
+| data | object | event-specific evidence (failure signals, fingerprints, ...) |
+
+Each verification event carries the full FailureSignal list (kind, severity,
+signature, evidence) plus pre/post state fingerprints and `state_changed`.
+`StepRecord` carries a compact summary (`verification_status`,
+`failure_kinds`); the authoritative detail lives here.
+
 ## manifest.json
 
 ```json
