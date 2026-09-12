@@ -1,0 +1,164 @@
+"""web-harness command line interface.
+
+Commands:
+    run          execute a single task episode
+    benchmark    execute a benchmark config (task x seeds, serial)
+    inspect-run  print a text summary of one recorded run
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from web_harness.config.loader import HarnessConfig, load_env_file
+from web_harness.evaluation.benchmark_runner import run_benchmark
+from web_harness.evaluation.metrics import episode_metrics
+from web_harness.runtime.episode_runner import EpisodeRunner, git_commit
+
+app = typer.Typer(help="Reliable Web Workflow Agent Harness (Phase 0)")
+console = Console()
+
+
+@app.callback()
+def _main():
+    # pick up .env values (shell environment always wins)
+    load_env_file()
+
+
+def _load_config(path: str) -> HarnessConfig:
+    try:
+        return HarnessConfig.from_yaml(Path(path))
+    except Exception as exc:
+        typer.secho(f"config error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
+
+
+@app.command()
+def run(
+    task: str = typer.Option(..., help="Task id, e.g. miniwob.click-test"),
+    seed: int = typer.Option(0, help="Random seed"),
+    config: str = typer.Option("configs/baseline.yaml", help="Harness config file"),
+    max_steps: int | None = typer.Option(None, help="Override task max steps"),
+):
+    """Run one episode of one task."""
+    cfg = _load_config(config)
+    benchmark_name, _, task_id = task.partition(".")
+    if not task_id:
+        benchmark_name, task_id = "miniwob", task
+
+    from web_harness.core.models import TaskSpec
+    from web_harness.env.browsergym_adapter import BrowserGymAdapter
+    from web_harness.evaluation.benchmark_runner import build_agent
+
+    agent, model_adapter = build_agent(cfg)
+    env = BrowserGymAdapter(
+        observation_char_limit=cfg.observation_char_limit,
+        save_screenshots=cfg.save_screenshots,
+    )
+    runner = EpisodeRunner(
+        agent=agent,
+        env=env,
+        trace_root=cfg.trace_root,
+        save_prompts=cfg.save_prompts,
+        save_model_responses=cfg.save_model_responses,
+        model_provider=cfg.model.get("provider", "openai_compatible"),
+        model_name=cfg.model.get("model"),
+        manifest_extra={"config_hash": cfg.hash, "git_commit": git_commit()},
+    )
+    task_spec = TaskSpec(
+        benchmark=benchmark_name,
+        task_id=task_id,
+        seed=seed,
+        max_steps=max_steps if max_steps is not None else cfg.max_steps,
+    )
+    result = runner.run(task_spec)
+    _print_result(result)
+
+
+def _print_result(result) -> None:
+    table = Table(title=f"Run {result.run_id}")
+    table.add_column("field", style="cyan")
+    table.add_column("value")
+    m = episode_metrics(result)
+    for key, value in m.items():
+        table.add_row(key, str(value))
+    table.add_row("trace", result.trace_path or "")
+    console.print(table)
+
+
+@app.command()
+def benchmark(
+    config: str = typer.Option(..., help="Benchmark config file"),
+    tasks: str | None = typer.Option(None, help="Comma-separated task override"),
+    seeds: str | None = typer.Option(None, help="Comma-separated seed override"),
+    experiments_root: str = typer.Option("experiments", help="Output root"),
+):
+    """Run a benchmark (serial, task x seed)."""
+    cfg = _load_config(config)
+    task_list = [t.strip() for t in tasks.split(",")] if tasks else None
+    seed_list = [int(s.strip()) for s in seeds.split(",")] if seeds else None
+    exp_dir, results = run_benchmark(
+        cfg,
+        tasks=task_list,
+        seeds=seed_list,
+        experiments_root=experiments_root,
+    )
+    console.print(f"[green]experiment written to[/green] {exp_dir}")
+    table = Table(title=f"Experiment {exp_dir.name}")
+    for col in ["task_id", "seed", "status", "success", "steps", "action_error_count"]:
+        table.add_column(col)
+    for r in results:
+        table.add_row(
+            r.task_spec.task_id,
+            str(r.task_spec.seed),
+            r.status.value,
+            str(r.success),
+            str(r.num_steps),
+            str(r.action_error_count),
+        )
+    console.print(table)
+
+
+@app.command()
+def inspect_run(run_id: str, runs_root: str = typer.Option("runs")):
+    """Print a text summary of a recorded run (no Web UI in Phase 0)."""
+    from web_harness.observability.trace import TraceRecorder
+
+    run_dir = Path(runs_root) / run_id
+    result = TraceRecorder.read_result(run_dir)
+    if result is None:
+        typer.secho(f"no result.json under {run_dir}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    m = episode_metrics(result)
+    console.print(f"Run ID: {m['run_id']}")
+    console.print(f"Task: {m['benchmark']}.{m['task_id']} (seed={m['seed']})")
+    console.print(f"Status: {m['status']}")
+    console.print(f"Reward: {m['final_reward']}")
+    console.print(f"Steps: {m['steps']}")
+    console.print(f"Duration: {m['duration_s']}s")
+    console.print(f"Tokens: in={m['input_tokens']} out={m['output_tokens']}")
+    console.print(f"Action errors: {m['action_error_count']}")
+    console.print(f"Trace directory: {result.trace_path}")
+    steps = TraceRecorder.read_steps(run_dir)
+    if steps:
+        table = Table(title="Steps")
+        for col in ["#", "action", "error", "reward", "in_tok", "out_tok"]:
+            table.add_column(col)
+        for s in steps:
+            table.add_row(
+                str(s.step_index),
+                (s.action or "-")[:60],
+                (s.action_error or "-")[:40],
+                str(s.reward if s.reward is not None else "-"),
+                str(s.input_tokens if s.input_tokens is not None else "-"),
+                str(s.output_tokens if s.output_tokens is not None else "-"),
+            )
+        console.print(table)
+
+
+if __name__ == "__main__":
+    app()

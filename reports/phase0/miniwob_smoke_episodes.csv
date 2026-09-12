@@ -1,0 +1,13 @@
+run_id,benchmark,task_id,seed,status,success,final_reward,steps,duration_s,input_tokens,output_tokens,action_error_count,error_type
+run-20260912T025453Z-169315ff,miniwob,click-test,0,success,True,1.0,1,10.984,459,68,0,TASK_TERMINATED
+run-20260912T025504Z-bdfe4e46,miniwob,click-button,0,success,True,1.0,1,10.015,503,52,0,TASK_TERMINATED
+run-20260912T025515Z-b9f08df0,miniwob,enter-text,0,error,False,0.0,4,19.594,1508,793,2,MODEL_OUTPUT_PARSE_ERROR
+run-20260912T025536Z-854d14bc,miniwob,choose-list,0,success,True,1.0,1,8.531,552,35,0,TASK_TERMINATED
+run-20260912T025545Z-5cc3e692,miniwob,click-checkboxes,0,error,False,0.0,7,32.5,3533,622,1,MODEL_OUTPUT_PARSE_ERROR
+run-20260912T025619Z-cef2a3b3,miniwob,click-link,0,success,True,1.0,5,79.078,2919,12313,1,TASK_TERMINATED
+run-20260912T025739Z-0fa7c97f,miniwob,login-user,0,error,False,0.0,7,37.406,3589,1790,5,MODEL_OUTPUT_PARSE_ERROR
+run-20260912T025818Z-8b51d137,miniwob,read-table,0,max_steps_reached,False,0.0,20,114.719,14457,8279,17,MAX_STEPS_EXCEEDED
+run-20260912T030014Z-8af5c024,miniwob,navigate-tree,0,success,True,1.0,1,10.625,535,145,0,TASK_TERMINATED
+run-20260912T030025Z-d3de2f47,miniwob,use-autocomplete,0,max_steps_reached,False,0.0,20,107.375,12741,8147,15,MAX_STEPS_EXCEEDED
+run-20260912T030214Z-cda89927,miniwob,choose-date-easy,0,error,False,0.0,7,39.781,3394,1560,5,MODEL_OUTPUT_PARSE_ERROR
+run-20260912T030255Z-c34f0726,miniwob,order-food,0,error,False,0.0,2,241.719,921,10854,0,MODEL_API_ERROR

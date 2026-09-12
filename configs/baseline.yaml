@@ -1,0 +1,27 @@
+# Phase 0 baseline harness configuration.
+# Secrets are read from environment variables only (see .env.example).
+
+model:
+  provider: openai_compatible
+  model: deepseek-flash
+  base_url_env: MODEL_BASE_URL
+  api_key_env: MODEL_API_KEY
+  temperature: 0.0
+  timeout_s: 120
+
+agent:
+  type: baseline
+  max_history_steps: 4
+  observation_char_limit: 30000
+
+runtime:
+  max_steps: 20
+
+trace:
+  root_dir: runs
+  save_prompts: true
+  save_model_responses: true
+  save_screenshots: false
+
+benchmark:
+  config: configs/benchmarks/miniwob_smoke.yaml

@@ -1,0 +1,41 @@
+# Phase 0 smoke benchmark: 12 fixed MiniWoB tasks x seed 0.
+# Engineering validation only - NOT a performance benchmark.
+
+benchmark: miniwob
+tasks:
+  - click-test
+  - click-button
+  - enter-text
+  - choose-list
+  - click-checkboxes
+  - click-link
+  - login-user
+  - read-table
+  - navigate-tree
+  - use-autocomplete
+  - choose-date-easy
+  - order-food
+seeds:
+  - 0
+
+model:
+  provider: openai_compatible
+  model: deepseek-flash
+  base_url_env: MODEL_BASE_URL
+  api_key_env: MODEL_API_KEY
+  temperature: 0.0
+  timeout_s: 120
+
+agent:
+  type: baseline
+  max_history_steps: 4
+  observation_char_limit: 30000
+
+runtime:
+  max_steps: 20
+
+trace:
+  root_dir: runs
+  save_prompts: true
+  save_model_responses: true
+  save_screenshots: false

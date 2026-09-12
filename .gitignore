@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# uv (lock file IS committed, cache is not)
+.uv-cache/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# run artifacts: traces and experiment outputs are not committed
+runs/*
+!runs/.gitkeep
+experiments/*
+!experiments/.gitkeep
+
+# secrets
+.env
+*.key
+
+# editors
+.vscode/
+.idea/
+# third_party/
+third_party/
+
+.pytest_tmp/

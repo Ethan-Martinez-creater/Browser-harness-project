@@ -1,0 +1,53 @@
+"""Episode and aggregate metrics.
+
+Phase 0 metrics are deliberately limited to what a baseline needs. Later
+phases add verification/recovery/checkpoint metrics on top of the same
+aggregation layer.
+"""
+
+from __future__ import annotations
+
+import statistics
+
+from web_harness.core.models import RunResult
+
+
+def episode_metrics(result: RunResult) -> dict:
+    return {
+        "run_id": result.run_id,
+        "benchmark": result.task_spec.benchmark,
+        "task_id": result.task_spec.task_id,
+        "seed": result.task_spec.seed,
+        "status": result.status.value,
+        "success": result.success,
+        "final_reward": result.final_reward,
+        "steps": result.num_steps,
+        "duration_s": round(result.duration_s, 3),
+        "input_tokens": result.input_tokens,
+        "output_tokens": result.output_tokens,
+        "action_error_count": result.action_error_count,
+        "error_type": result.error_type.value if result.error_type else None,
+    }
+
+
+def aggregate_metrics(results: list[RunResult]) -> dict:
+    if not results:
+        return {"num_episodes": 0}
+    successes = [r for r in results if r.success]
+    steps = [r.num_steps for r in results]
+    durations = [r.duration_s for r in results]
+    action_errors = [r.action_error_count for r in results]
+    return {
+        "num_episodes": len(results),
+        "success_rate": len(successes) / len(results),
+        "num_successes": len(successes),
+        "mean_reward": statistics.fmean(r.final_reward for r in results),
+        "mean_steps": statistics.fmean(steps),
+        "median_steps": statistics.median(steps),
+        "mean_duration_s": statistics.fmean(durations),
+        "total_input_tokens": sum(r.input_tokens for r in results),
+        "total_output_tokens": sum(r.output_tokens for r in results),
+        "action_error_rate": (
+            statistics.fmean(1.0 if e > 0 else 0.0 for e in action_errors)
+        ),
+    }

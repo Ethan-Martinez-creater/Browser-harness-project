@@ -1,0 +1,22 @@
+# Offline engineering-validation config: mock model against the real
+# MiniWoB environment. Not a performance benchmark; the mock model cannot
+# solve tasks. Use for pipeline/trace verification without any API key.
+
+model:
+  provider: mock
+  mock_actions:
+    - "noop()"
+
+agent:
+  type: baseline
+  max_history_steps: 4
+  observation_char_limit: 30000
+
+runtime:
+  max_steps: 3
+
+trace:
+  root_dir: runs
+  save_prompts: true
+  save_model_responses: true
+  save_screenshots: false
