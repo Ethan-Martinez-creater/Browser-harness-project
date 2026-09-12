@@ -4,8 +4,8 @@ from web_harness.core.models import RunResult, RunStatus, TaskSpec
 from web_harness.evaluation.metrics import aggregate_metrics, episode_metrics
 
 
-def make_result(run_id: str, *, retries: int = 0, retry_success: int = 0,
-                exhausted: int = 0, extra_calls: int = 0,
+def make_result(run_id: str, *, retries: int = 0, retry_cycles: int = 0,
+                retry_success: int = 0, exhausted: int = 0, extra_calls: int = 0,
                 retry_in: int = 0, retry_out: int = 0, retry_latency: float = 0.0) -> RunResult:
     return RunResult(
         run_id=run_id,
@@ -18,6 +18,7 @@ def make_result(run_id: str, *, retries: int = 0, retry_success: int = 0,
         input_tokens=100 + retry_in,
         output_tokens=20 + retry_out,
         retry_count=retries,
+        retry_cycle_count=retry_cycles if retry_cycles else (1 if retries else 0),
         retry_success_count=retry_success,
         retry_exhausted_count=exhausted,
         extra_model_calls=extra_calls,
@@ -40,19 +41,22 @@ def test_episode_metrics_include_retry_fields():
 
 def test_aggregate_retry_metrics():
     results = [
-        make_result("r1", retries=2, retry_success=1, extra_calls=2,
+        # one decision cycle with 2 retry attempts, eventually successful
+        make_result("r1", retries=2, retry_cycles=1, retry_success=1, extra_calls=2,
                     retry_in=50, retry_out=10, retry_latency=1.0),
         make_result("r2", retries=0),
-        make_result("r3", retries=1, exhausted=1, extra_calls=1,
+        # one decision cycle with 1 retry, exhausted
+        make_result("r3", retries=1, retry_cycles=1, exhausted=1, extra_calls=1,
                     retry_in=30, retry_out=5, retry_latency=0.5),
     ]
     agg = aggregate_metrics(results)
-    assert agg["total_retry_count"] == 3
+    assert agg["total_retry_count"] == 3  # retry ATTEMPTS
+    assert agg["retry_cycle_count"] == 2  # decision cycles with >= 1 retry
     assert agg["episodes_with_retry"] == 2
     assert agg["retry_success_count"] == 1
     assert agg["retry_exhausted_count"] == 1
-    # retry_success_rate over retried decision cycles: 1 success / 3 retries
-    assert abs(agg["retry_success_rate"] - 1 / 3) < 1e-9
+    # retry_success_rate denominator = retry-bearing CYCLES (1/2), not attempts
+    assert abs(agg["retry_success_rate"] - 1 / 2) < 1e-9
     assert agg["total_extra_model_calls"] == 3
     assert agg["total_retry_input_tokens"] == 80
     assert agg["total_retry_output_tokens"] == 15

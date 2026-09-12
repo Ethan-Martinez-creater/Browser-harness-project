@@ -61,6 +61,8 @@ class DecisionExecutionResult(BaseModel):
 
     attempts: int = 0
     retry_count: int = 0
+    api_retry_count: int = 0
+    parse_retry_count: int = 0
 
     terminal_error_type: ErrorType | None = None
     terminal_error_message: str | None = None
@@ -141,11 +143,18 @@ class DecisionExecutor:
         action_contract: ActionContract,
         reliability_state: ReliabilityState,
         event_sink: Callable[[dict], None] | None = None,
+        attempt_sink: Callable[..., str | None] | None = None,
         step_index: int | None = None,
     ) -> DecisionExecutionResult:
         """Run one decision cycle: initial attempt + controlled model-side
-        retries. Emits retry events when a sink is provided; updates the
-        reliability state (retry_count, extra_model_calls)."""
+        retries. Emits retry events when a sink is provided; persists failed
+        parse attempts through `attempt_sink` when given; updates the
+        reliability state (retry_count, extra_model_calls).
+
+        Retry limits are counted PER FAILURE KIND (api_retry_count and
+        parse_retry_count are independent); the episode-level extra-model-call
+        budget is global across kinds.
+        """
 
         result = DecisionExecutionResult(success=False)
         emit = event_sink or (lambda event: None)
@@ -162,6 +171,9 @@ class DecisionExecutor:
                 }
             )
 
+        # per-kind retry counters inside this decision cycle (B1)
+        api_retry_count = 0
+        parse_retry_count = 0
         repair_feedback: str | None = None
         attempt_index = 0  # 0 = initial attempt
         while True:
@@ -180,16 +192,28 @@ class DecisionExecutor:
                     result, input_tokens=None, output_tokens=None,
                     is_retry=attempt_index > 0, started=started,
                 )
-                decision = self._retry_decision(
-                    result, self._api_signal(exc), attempt_index, reliability_state
-                )
+                # non-transient API errors (auth/permission/bad request) are
+                # terminal before any retry accounting: a retry cannot fix
+                # them and must not consume budget
+                if not getattr(exc, "transient", True):
+                    decision = RetryDecisionShim(
+                        retry=False, reason="non-transient api error"
+                    )
+                else:
+                    decision = self._retry_decision(
+                        result, self._api_signal(exc), api_retry_count,
+                        reliability_state,
+                    )
                 if decision.retry:
+                    api_retry_count += 1
                     emit_retry_event(
                         attempt_index=attempt_index + 1,
                         outcome="retry",
                         reason="MODEL_API_ERROR",
                         backoff_ms=decision.backoff_ms,
                     )
+                    # backoff is part of the retry overhead (R2)
+                    result.retry_latency_s += decision.backoff_ms / 1000.0
                     self.sleep(decision.backoff_ms / 1000.0)
                     repair_feedback = None
                     attempt_index += 1
@@ -212,15 +236,30 @@ class DecisionExecutor:
                     is_retry=attempt_index > 0,
                     started=started,
                 )
+                # keep the failed attempt auditable (R4): artifact via sink
+                artifact_ref = None
+                if attempt_sink is not None:
+                    artifact_ref = attempt_sink(
+                        step_index=step_index,
+                        attempt_index=attempt_index,
+                        failure_type="MODEL_OUTPUT_PARSE_ERROR",
+                        raw_text=exc.raw_text,
+                        input_tokens=exc.input_tokens,
+                        output_tokens=exc.output_tokens,
+                        model_name=exc.model_name,
+                    )
                 decision = self._retry_decision(
-                    result, self._parse_signal(exc), attempt_index, reliability_state
+                    result, self._parse_signal(exc), parse_retry_count,
+                    reliability_state,
                 )
                 if decision.retry:
+                    parse_retry_count += 1
                     emit_retry_event(
                         attempt_index=attempt_index + 1,
                         outcome="retry",
                         reason="MODEL_OUTPUT_PARSE_ERROR",
                         backoff_ms=0,
+                        artifact_ref=artifact_ref,
                     )
                     repair_feedback = REPAIR_FEEDBACK
                     attempt_index += 1
@@ -252,10 +291,14 @@ class DecisionExecutor:
             if attempt_index > 0:
                 result.retry_count = attempt_index
                 result.retry_success = True
+                result.api_retry_count = api_retry_count
+                result.parse_retry_count = parse_retry_count
                 emit_retry_event(
                     attempt_index=attempt_index,
                     outcome="retry_succeeded",
                     reason="decision produced a valid ActionDecision",
+                    api_retries=api_retry_count,
+                    parse_retries=parse_retry_count,
                 )
             return result
 
@@ -263,25 +306,25 @@ class DecisionExecutor:
         self,
         result: DecisionExecutionResult,
         signal: FailureSignal,
-        attempt_index: int,
+        retry_index_for_kind: int,
         reliability_state: ReliabilityState,
     ):
-        """Consult the policy; return its decision, updating state when the
-        failure is terminal."""
+        """Consult the policy with the PER-KIND retry count; return its
+        decision, updating state when the failure is terminal."""
         if self.retry_policy is None:
             # retry disabled: model-side failures stay terminal (Phase 0 path)
             return RetryDecisionShim(retry=False, reason="retry_disabled")
         decision = self.retry_policy.decide(
             failure_kind=signal.kind,
-            retry_index=attempt_index + 1,
+            retry_index_for_kind=retry_index_for_kind,
             reliability_state=reliability_state,
             budget=self.budget,
         )
         if decision.retry:
-            # a retry is one extra model call
+            # a retry is one extra model call (global across kinds)
             reliability_state.extra_model_calls += 1
             reliability_state.retry_count += 1
-            result.retry_count = attempt_index + 1
+            result.retry_count += 1
         return decision
 
     @staticmethod

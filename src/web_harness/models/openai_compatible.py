@@ -27,6 +27,25 @@ logger = logging.getLogger(__name__)
 
 _JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
 
+# exception names that a retry may plausibly fix; everything else
+# (authentication, permission, bad request, invalid model/config) is terminal
+_TRANSIENT_API_EXCEPTIONS = {
+    "APIConnectionError",
+    "APITimeoutError",
+    "RateLimitError",
+    "InternalServerError",
+    "APIStatusError",  # generic 5xx-ish status wrapper
+}
+
+
+def _is_transient_api_error(exc: Exception) -> bool:
+    """Classify an OpenAI SDK exception as transient (retryable) or terminal.
+
+    Matching is by exception class name so the adapter does not need to import
+    provider SDK types directly (keeps provider coupling minimal).
+    """
+    return type(exc).__name__ in _TRANSIENT_API_EXCEPTIONS
+
 
 def parse_structured_action(raw_text: str) -> ActionDecision:
     """Extract {"action": ..., "short_reason": ...} from model output.
@@ -116,7 +135,10 @@ class OpenAICompatibleModelAdapter:
         try:
             response = self._client.chat.completions.create(**kwargs)
         except Exception as exc:
-            raise ModelApiError(f"model API call failed: {type(exc).__name__}") from exc
+            raise ModelApiError(
+                f"model API call failed: {type(exc).__name__}",
+                transient=_is_transient_api_error(exc),
+            ) from exc
 
         try:
             raw_text = response.choices[0].message.content or ""

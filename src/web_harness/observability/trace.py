@@ -85,6 +85,41 @@ class TraceRecorder:
                 self.run_dir / f"artifacts/raw_failed_{step_index:03d}.txt", raw_text
             )
 
+    def write_failed_attempt(
+        self,
+        *,
+        step_index: int | None,
+        attempt_index: int,
+        failure_type: str,
+        raw_text: str | None,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        model_name: str | None = None,
+    ) -> str | None:
+        """Persist one failed model attempt as a deterministic artifact (R4).
+
+        Returns the artifact reference (relative to the run dir) so retry
+        events can point at it, or None when there is nothing to store.
+        steps.jsonl one-step semantics are untouched.
+        """
+        if not raw_text:
+            return None
+        pad_step = f"{step_index:03d}" if step_index is not None else "xxx"
+        ref = f"artifacts/attempt_{pad_step}_{attempt_index:02d}.json"
+        _write_json(
+            self.run_dir / ref,
+            {
+                "step_index": step_index,
+                "attempt_index": attempt_index,
+                "failure_type": failure_type,
+                "raw_text": raw_text,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "model_name": model_name,
+            },
+        )
+        return ref
+
     # -- steps -------------------------------------------------------------
 
     def record_step(

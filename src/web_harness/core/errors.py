@@ -51,6 +51,14 @@ class ConfigError(HarnessError):
 class ModelApiError(HarnessError):
     error_type = ErrorType.MODEL_API_ERROR
 
+    def __init__(self, message: str, *, detail: str | None = None,
+                 transient: bool = True):
+        super().__init__(message, detail=detail)
+        # transient: timeout/connection/rate-limit/5xx class errors that a
+        # retry may fix. Non-transient (authentication, permission, bad
+        # request, invalid model/config) must never be retried.
+        self.transient = transient
+
 
 class ModelOutputParseError(HarnessError):
     """Model output could not be parsed into an ActionDecision.

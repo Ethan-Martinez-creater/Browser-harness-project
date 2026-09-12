@@ -177,6 +177,47 @@ def main() -> int:
     }
     scenarios.append(data)
 
+    # M1: API error -> parse error -> success (per-kind allowances independent)
+    _, data = run_scenario(
+        name="M1", api_error_calls=(0,), parse_error_calls=(1,), tmp_root=out_dir
+    )
+    data["expected"] = "success; 1 API retry + 1 parse retry; one env action"
+    data["assertions"] = {
+        "success": data["status"] == "success",
+        "two_retries": data["retry_count"] == 2,
+        "one_env_action": data["env_steps"] == 1,
+        "mixed_reasons_recorded": [e["outcome"] for e in data["retry_events"]].count("retry") == 2,
+    }
+    scenarios.append(data)
+
+    # M2: parse error -> two API errors -> success
+    _, data = run_scenario(
+        name="M2", parse_error_calls=(0,), api_error_calls=(1, 2), tmp_root=out_dir
+    )
+    data["expected"] = "success; parse repair = 1 + 2 API retries"
+    data["assertions"] = {
+        "success": data["status"] == "success",
+        "three_retries": data["retry_count"] == 3,
+        "one_env_action": data["env_steps"] == 1,
+    }
+    scenarios.append(data)
+
+    # M3: mixed failures cross the episode budget
+    _, data = run_scenario(
+        name="M3",
+        parse_error_calls=(0,),
+        api_error_calls=(1, 2, 3),
+        budget_extra=2,
+        tmp_root=out_dir,
+    )
+    data["expected"] = "episode budget cuts the mixed path; controlled stop"
+    data["assertions"] = {
+        "budget_exceeded_error": data["error_type"] == ErrorType.BUDGET_EXCEEDED.value,
+        "budget_respected": data["extra_model_calls"] == 2,
+        "zero_env_actions": data["env_steps"] == 0,
+    }
+    scenarios.append(data)
+
     for s in scenarios:
         s["pass"] = all(s["assertions"].values())
         s["failed_assertions"] = [k for k, v in s["assertions"].items() if not v]

@@ -101,11 +101,60 @@ class HarnessConfig:
                 raise ConfigError(f"unknown verification mode: {mode}")
             if not isinstance(verifier_cfg.get("enabled", True), bool):
                 raise ConfigError("verification.enabled must be a boolean")
+        if reliability_enabled:
+            self._validate_retry_config(self.reliability.get("retry") or {})
+            budget_cfg = self.reliability.get("budget") or {}
+            if "max_extra_model_calls_per_episode" in budget_cfg:
+                value = budget_cfg["max_extra_model_calls_per_episode"]
+                if (
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or value < 0
+                ):
+                    raise ConfigError(
+                        "reliability.budget.max_extra_model_calls_per_episode "
+                        "must be an int >= 0"
+                    )
 
         if self.model.get("provider") not in (None, "openai_compatible", "mock"):
             raise ConfigError(f"unknown model provider: {self.model.get('provider')}")
         if self.model.get("provider") == "openai_compatible" and not self.model.get("model"):
             raise ConfigError("model.model is required for provider openai_compatible")
+
+    @classmethod
+    def _validate_retry_config(cls, retry_cfg: dict[str, Any]) -> None:
+        """Fail-fast validation of the retry section (R3)."""
+        if not retry_cfg:
+            return
+        enabled = retry_cfg.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ConfigError("reliability.retry.enabled must be a boolean")
+
+        def _validate_non_negative_int(value: Any, name: str) -> None:
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ConfigError(f"reliability.retry.{name} must be an int >= 0")
+
+        api_cfg = retry_cfg.get("model_api") or {}
+        if "max_retries" in api_cfg:
+            _validate_non_negative_int(api_cfg["max_retries"], "model_api.max_retries")
+        backoff = api_cfg.get("backoff_ms")
+        if backoff is not None and (
+            not isinstance(backoff, list)
+            or not all(
+                isinstance(ms, int) and not isinstance(ms, bool) and ms >= 0
+                for ms in backoff
+            )
+        ):
+            raise ConfigError(
+                "reliability.retry.model_api.backoff_ms must be a list of ints >= 0"
+            )
+        output_cfg = retry_cfg.get("model_output") or {}
+        if "max_retries" in output_cfg:
+            _validate_non_negative_int(
+                output_cfg["max_retries"], "model_output.max_retries"
+            )
+        # NOTE: when api_max_retries > len(backoff_ms), the LAST backoff value
+        # is reused for all remaining retries (deliberate, deterministic).
 
     @classmethod
     def _validate_no_literal_secrets(cls, data: dict[str, Any]) -> None:

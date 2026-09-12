@@ -160,6 +160,7 @@ class RunResult(BaseModel):
     failure_kind_counts: dict[str, int] = Field(default_factory=dict)
     # Phase 1B retry accounting (totals over the whole episode)
     retry_count: int = 0
+    retry_cycle_count: int = 0  # decision cycles with >= 1 retry
     retry_success_count: int = 0
     retry_exhausted_count: int = 0
     extra_model_calls: int = 0

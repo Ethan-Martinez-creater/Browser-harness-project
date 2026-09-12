@@ -158,6 +158,7 @@ class EpisodeRunner:
 
             # episode-level retry accounting (Phase 1B)
             episode_retry_count = 0
+            episode_retry_cycle_count = 0
             episode_retry_success_count = 0
             episode_retry_exhausted_count = 0
             episode_extra_model_calls = 0
@@ -180,6 +181,13 @@ class EpisodeRunner:
                     )
                 )
 
+            def attempt_sink(**kwargs) -> str | None:
+                # failed model attempts become trace artifacts (R4); ref is
+                # attached to the matching retry event
+                if not self.save_model_responses:
+                    return None
+                return recorder.write_failed_attempt(**kwargs)
+
             # -- explicit harness loop ------------------------------------
             for step_idx in range(task.max_steps):
                 t0 = time.monotonic()
@@ -195,9 +203,12 @@ class EpisodeRunner:
                     action_contract=action_contract,
                     reliability_state=state.reliability,
                     event_sink=emit_runtime_event,
+                    attempt_sink=attempt_sink,
                     step_index=step_idx,
                 )
                 episode_retry_count += decision_result.retry_count
+                if decision_result.retry_count > 0:
+                    episode_retry_cycle_count += 1
                 episode_extra_model_calls += decision_result.retry_count
                 episode_retry_input_tokens += decision_result.retry_input_tokens
                 episode_retry_output_tokens += decision_result.retry_output_tokens
@@ -359,6 +370,7 @@ class EpisodeRunner:
                 recorder, state, status, error_type, error_message,
                 started, started_at, run_dir, final_reward=final_reward,
                 retry_count=episode_retry_count,
+                retry_cycle_count=episode_retry_cycle_count,
                 retry_success_count=episode_retry_success_count,
                 retry_exhausted_count=episode_retry_exhausted_count,
                 extra_model_calls=episode_extra_model_calls,
@@ -419,6 +431,7 @@ class EpisodeRunner:
         run_dir: Path,
         final_reward: float = 0.0,
         retry_count: int = 0,
+        retry_cycle_count: int = 0,
         retry_success_count: int = 0,
         retry_exhausted_count: int = 0,
         extra_model_calls: int = 0,
@@ -459,6 +472,7 @@ class EpisodeRunner:
             failure_signal_count=state.reliability.total_failure_signals,
             failure_kind_counts=kind_counts,
             retry_count=retry_count,
+            retry_cycle_count=retry_cycle_count,
             retry_success_count=retry_success_count,
             retry_exhausted_count=retry_exhausted_count,
             extra_model_calls=extra_model_calls,

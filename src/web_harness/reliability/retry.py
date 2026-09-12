@@ -48,7 +48,11 @@ class RetryPolicy:
         api_backoff_ms: list[int] | None = None,
         parse_max_retries: int = 1,
     ):
+        if api_max_retries < 0 or parse_max_retries < 0:
+            raise ValueError("retry limits must be >= 0")
         self.api_max_retries = api_max_retries
+        # NOTE: when api_max_retries > len(api_backoff_ms), the LAST value is
+        # reused for all remaining retries (deliberate, deterministic).
         self.api_backoff_ms = list(api_backoff_ms or [500, 1000])
         self.parse_max_retries = parse_max_retries
 
@@ -71,13 +75,16 @@ class RetryPolicy:
         self,
         *,
         failure_kind: FailureKind,
-        retry_index: int,
+        retry_index_for_kind: int,
         reliability_state: ReliabilityState,
         budget: ReliabilityBudget,
     ) -> RetryDecision:
-        """Decide whether an attempt with a given failure may be retried.
+        """Decide whether a failed attempt of `failure_kind` may be retried.
 
-        `retry_index` is 1-based: the decision for the 1st retry passes 1.
+        `retry_index_for_kind` is the number of retries ALREADY executed for
+        this failure kind within the current decision cycle (0-based). Retry
+        allowances are independent per kind; the episode-level
+        extra-model-call budget is global across kinds.
         """
         if failure_kind not in RETRYABLE_KINDS:
             return RetryDecision(
@@ -90,7 +97,7 @@ class RetryPolicy:
                 retry=False,
                 reason="episode extra-model-call budget exhausted",
             )
-        if retry_index > self._max_retries(failure_kind):
+        if retry_index_for_kind >= self._max_retries(failure_kind):
             return RetryDecision(
                 retry=False,
                 reason="retry_exhausted",
@@ -98,5 +105,5 @@ class RetryPolicy:
         return RetryDecision(
             retry=True,
             reason=failure_kind.value,
-            backoff_ms=self._backoff_ms(failure_kind, retry_index),
+            backoff_ms=self._backoff_ms(failure_kind, retry_index_for_kind + 1),
         )

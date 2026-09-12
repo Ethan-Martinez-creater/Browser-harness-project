@@ -177,6 +177,110 @@
       },
       "pass": true,
       "failed_assertions": []
+    },
+    {
+      "scenario": "M1",
+      "status": "success",
+      "error_type": "TASK_TERMINATED",
+      "retry_count": 2,
+      "extra_model_calls": 2,
+      "env_steps": 1,
+      "steps": 1,
+      "retry_events": [
+        {
+          "attempt_index": 1,
+          "outcome": "retry"
+        },
+        {
+          "attempt_index": 2,
+          "outcome": "retry"
+        },
+        {
+          "attempt_index": 2,
+          "outcome": "retry_succeeded"
+        }
+      ],
+      "input_tokens": 111,
+      "retry_input_tokens": 111,
+      "expected": "success; 1 API retry + 1 parse retry; one env action",
+      "assertions": {
+        "success": true,
+        "two_retries": true,
+        "one_env_action": true,
+        "mixed_reasons_recorded": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "M2",
+      "status": "success",
+      "error_type": "TASK_TERMINATED",
+      "retry_count": 3,
+      "extra_model_calls": 3,
+      "env_steps": 1,
+      "steps": 1,
+      "retry_events": [
+        {
+          "attempt_index": 1,
+          "outcome": "retry"
+        },
+        {
+          "attempt_index": 2,
+          "outcome": "retry"
+        },
+        {
+          "attempt_index": 3,
+          "outcome": "retry"
+        },
+        {
+          "attempt_index": 3,
+          "outcome": "retry_succeeded"
+        }
+      ],
+      "input_tokens": 111,
+      "retry_input_tokens": 0,
+      "expected": "success; parse repair = 1 + 2 API retries",
+      "assertions": {
+        "success": true,
+        "three_retries": true,
+        "one_env_action": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "M3",
+      "status": "error",
+      "error_type": "BUDGET_EXCEEDED",
+      "retry_count": 2,
+      "extra_model_calls": 2,
+      "env_steps": 0,
+      "steps": 1,
+      "retry_events": [
+        {
+          "attempt_index": 1,
+          "outcome": "retry"
+        },
+        {
+          "attempt_index": 2,
+          "outcome": "retry"
+        },
+        {
+          "attempt_index": 2,
+          "outcome": "exhausted"
+        }
+      ],
+      "input_tokens": 111,
+      "retry_input_tokens": 0,
+      "expected": "episode budget cuts the mixed path; controlled stop",
+      "assertions": {
+        "budget_exceeded_error": true,
+        "budget_respected": true,
+        "zero_env_actions": true
+      },
+      "pass": true,
+      "failed_assertions": []
     }
   ],
   "all_pass": true
