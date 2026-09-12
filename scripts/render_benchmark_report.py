@@ -1,16 +1,18 @@
-"""Render the Phase 0 benchmark Markdown report from machine results.
+"""Render benchmark Markdown reports from machine results (phase-aware).
 
 Usage:
     uv run python scripts/render_benchmark_report.py \
         --summary experiments/<id>/summary.json \
         --episodes experiments/<id>/episodes.csv \
-        --output reports/phase0/miniwob_smoke_report.md \
+        --output report.md \
+        [--profile phase0|phase1a] \
         [--notes path/to/notes.md]
 
-All benchmark numbers (per-episode table, aggregate metrics, success count)
-are generated from summary.json / episodes.csv — never hand-written. The
-optional notes file may add qualitative observations but must not contain
-manually copied benchmark values.
+All benchmark numbers (per-episode table, aggregate metrics, verification
+statistics) are generated from summary.json / episodes.csv — never
+hand-written. The profile controls title, scope warning and the reliability
+metrics section so committed reports can be rebuilt byte-identically from
+their machine results.
 """
 
 from __future__ import annotations
@@ -35,43 +37,131 @@ def is_truthy(value) -> bool:
     return str(value).strip().lower() in ("true", "1", "yes")
 
 
-def render(summary: dict, episodes: list[dict]) -> str:
+PROFILES = {
+    "phase0": {
+        "title": "# Phase 0 MiniWoB Smoke Benchmark Report",
+        "scope": [
+            "> **Scope warning**: this is the Phase 0 engineering smoke run.",
+            "It validates the measurement system (runtime, adapter, tracing,",
+            "benchmark runner, metrics) and establishes the baseline reference.",
+            "It is not a model-capability conclusion.",
+        ],
+        "reliability": False,
+    },
+    "phase1a": {
+        "title": "# Phase 1A Verification (Shadow Mode) Report",
+        "scope": [
+            "> **Scope warning**: this is the Phase 1A engineering smoke run.",
+            "It validates the failure-observation layer (deterministic",
+            "fingerprinting, detectors, verification events) in shadow mode and",
+            "establishes the verification reference. It is not a",
+            "model-capability conclusion, and shadow mode does not change the",
+            "control flow.",
+        ],
+        "reliability": True,
+    },
+}
+
+
+def render_reliability_metrics(summary: dict) -> list[str]:
     agg = summary["aggregate"]
+    config = summary.get("config", {})
+    reliability_cfg = config.get("reliability") or {}
+    verification_cfg = reliability_cfg.get("verification") or {}
+    loop_cfg = verification_cfg.get("loop") or {}
+    lines = [
+        "## Verification layer metrics (Phase 1A)",
+        "",
+        f"- reliability enabled: {reliability_cfg.get('enabled', False)}",
+        f"- verification enabled: {verification_cfg.get('enabled', False)}",
+        f"- verification mode: {verification_cfg.get('mode', 'shadow')}",
+        f"- no-progress detector: "
+        f"{(verification_cfg.get('no_progress') or {}).get('enabled', True)}",
+        f"- loop detector: {loop_cfg.get('enabled', True)} "
+        f"(consecutive_threshold={loop_cfg.get('consecutive_threshold', 2)})",
+        "",
+        "| metric | value |",
+        "|---|---:|",
+        f"| verification_count | {agg.get('verification_count', 0)} |",
+        f"| verifications_with_signal | {agg.get('verifications_with_signal', 0)} |",
+        f"| verification_signal_rate | {fmt_num(agg.get('verification_signal_rate', 0.0))} |",
+        f"| mean_failure_signals_per_verification | "
+        f"{fmt_num(agg.get('mean_failure_signals_per_verification', 0.0))} |",
+        f"| failure_signal_count | {agg.get('failure_signal_count', 0)} |",
+        f"| episodes_with_failure_signal | {agg.get('episodes_with_failure_signal', 0)} |",
+        "",
+        "Failure kinds:",
+        "",
+    ]
+    kind_counts = agg.get("failure_kind_counts") or {}
+    if kind_counts:
+        lines.append("| failure kind | count |")
+        lines.append("|---|---:|")
+        for kind, count in kind_counts.items():
+            lines.append(f"| {kind} | {count} |")
+    else:
+        lines.append("(none)")
+    lines.append("")
+    lines.append(
+        "Shadow mode guarantees: verification_count == total agent steps "
+        "(one verification per step), zero extra model calls, zero extra "
+        "environment actions. Detection only — retry, recovery and replanning "
+        "do not exist in this phase."
+    )
+    lines.append("")
+    return lines
+
+
+def render(summary: dict, episodes: list[dict], profile: str) -> str:
+    p = PROFILES[profile]
+    agg = summary["aggregate"]
+    config = summary.get("config", {})
     lines: list[str] = []
 
-    config = summary.get("config", {})
-    lines.append("# Phase 0 MiniWoB Smoke Benchmark Report")
+    lines.append(p["title"])
     lines.append("")
-    lines.append(f"- Experiment: `{summary['experiment_id']}` "
-                 f"(auto-generated from summary.json / episodes.csv)")
-    lines.append(f"- Tasks: {len(config.get('tasks', []))} × seeds "
-                 f"{config.get('seeds', [])}, serial")
-    lines.append(f"- Model: `{(config.get('model') or {}).get('model', '?')}` "
-                 f"(provider `{(config.get('model') or {}).get('provider', '?')}`, "
-                 f"temperature {(config.get('model') or {}).get('temperature', '?')})")
-    lines.append(f"- Agent: `{(config.get('agent') or {}).get('type', 'baseline')}`, "
-                 f"max_steps {(config.get('runtime') or {}).get('max_steps', '?')}")
-    lines.append(f"- Environment bootstrap: "
-                 f"{(config.get('environment') or {}).get('bootstrap_action') or 'disabled'}")
-    lines.append("")
-    lines.append("> **Scope warning**: this is the Phase 0 engineering smoke run.")
-    lines.append("It validates the measurement system (runtime, adapter, tracing,")
-    lines.append("benchmark runner, metrics) and establishes the baseline reference.")
-    lines.append("It is not a model-capability conclusion.")
+    lines.append(
+        f"- Experiment: `{summary['experiment_id']}` "
+        f"(auto-generated from summary.json / episodes.csv)"
+    )
+    lines.append(
+        f"- Tasks: {len(config.get('tasks', []))} × seeds "
+        f"{config.get('seeds', [])}, serial"
+    )
+    lines.append(
+        f"- Model: `{(config.get('model') or {}).get('model', '?')}` "
+        f"(provider `{(config.get('model') or {}).get('provider', '?')}`, "
+        f"temperature {(config.get('model') or {}).get('temperature', '?')})"
+    )
+    lines.append(
+        f"- Agent: `{(config.get('agent') or {}).get('type', 'baseline')}`, "
+        f"max_steps {(config.get('runtime') or {}).get('max_steps', '?')}"
+    )
+    env_cfg = config.get("environment") or {}
+    lines.append(
+        f"- Environment bootstrap: {env_cfg.get('bootstrap_action') or 'disabled'}"
+    )
+    lines.extend(p["scope"])
     lines.append("")
 
     lines.append("## Per-episode results")
     lines.append("")
-    lines.append("| task | seed | status | success | reward | steps | duration (s) "
-                 "| input tokens | output tokens | action errors | error type |")
-    lines.append("|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---|")
+    lines.append(
+        "| task | seed | status | success | reward | steps | duration (s) "
+        "| input tokens | output tokens | action errors | verifications | "
+        "failure signals | error type |"
+    )
+    lines.append("|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for e in episodes:
+        verif = e.get("verification_count", "-")
+        signals = e.get("failure_signal_count", "-")
         lines.append(
             f"| {e['task_id']} | {e['seed']} | {e['status']} "
             f"| {'✅' if is_truthy(e['success']) else '❌'} | {fmt_num(e['final_reward'], 1)} "
             f"| {e['steps']} | {fmt_num(e['duration_s'])} "
             f"| {e['input_tokens']} | {e['output_tokens']} "
-            f"| {e['action_error_count']} | {e['error_type'] or '-'} |"
+            f"| {e['action_error_count']} | {verif} | {signals} "
+            f"| {e['error_type'] or '-'} |"
         )
     lines.append("")
 
@@ -89,10 +179,42 @@ def render(summary: dict, episodes: list[dict]) -> str:
     lines.append(f"| total_output_tokens | {agg['total_output_tokens']} |")
     lines.append(f"| action_error_rate | {fmt_num(agg['action_error_rate'])} |")
     lines.append("")
-    lines.append("`estimated_cost` is null by design: the harness never guesses")
-    lines.append("prices without a reliable price table; token counts above are")
-    lines.append("the authoritative usage record.")
+    if p["reliability"]:
+        lines.extend(render_reliability_metrics(summary))
+    lines.append(
+        "`estimated_cost` is null by design: the harness never guesses prices "
+        "without a reliable price table; token counts above are the "
+        "authoritative usage record."
+    )
     return "\n".join(lines) + "\n"
+
+
+NUMERIC_FIELDS = {
+    "final_reward",
+    "duration_s",
+    "steps",
+    "input_tokens",
+    "output_tokens",
+    "action_error_count",
+    "verification_count",
+    "verifications_with_signal",
+    "failure_signal_count",
+    "seed",
+    "success",
+}
+
+
+def load_episodes(path: Path) -> list[dict]:
+    with open(path, encoding="utf-8", newline="") as f:
+        episodes = list(csv.DictReader(f))
+    # csv gives strings; restore numeric fields used by the renderer
+    for row in episodes:
+        for key in NUMERIC_FIELDS & row.keys():
+            with contextlib.suppress(ValueError):
+                row[key] = (
+                    float(row[key]) if key == "duration_s" else int(float(row[key]))
+                )
+    return episodes
 
 
 def main() -> int:
@@ -101,22 +223,22 @@ def main() -> int:
     parser.add_argument("--episodes", required=True, help="path to episodes.csv")
     parser.add_argument("--output", required=True, help="path to output report.md")
     parser.add_argument(
-        "--notes", help="optional qualitative notes (markdown) appended to the report"
+        "--profile",
+        choices=sorted(PROFILES),
+        default="phase0",
+        help="report profile (title, scope warning, reliability section)",
+    )
+    parser.add_argument(
+        "--notes",
+        help="optional qualitative notes (markdown, no benchmark numbers) "
+        "appended to the report",
     )
     args = parser.parse_args()
 
     summary = json.loads(Path(args.summary).read_text(encoding="utf-8"))
-    with open(args.episodes, encoding="utf-8", newline="") as f:
-        episodes = list(csv.DictReader(f))
-    # csv gives strings; restore numeric fields used by the renderer
-    numeric = {"final_reward", "duration_s", "steps", "input_tokens",
-               "output_tokens", "action_error_count", "seed", "success"}
-    for row in episodes:
-        for key in numeric & row.keys():
-            with contextlib.suppress(ValueError):
-                row[key] = float(row[key]) if key == "duration_s" else int(float(row[key]))
+    episodes = load_episodes(Path(args.episodes))
 
-    report = render(summary, episodes)
+    report = render(summary, episodes, args.profile)
     if args.notes:
         notes = Path(args.notes).read_text(encoding="utf-8")
         report += "\n" + notes.strip() + "\n"

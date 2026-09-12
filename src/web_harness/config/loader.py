@@ -92,8 +92,15 @@ class HarnessConfig:
         verifier_cfg = self.reliability.get("verification") or {}
         if reliability_enabled and verifier_cfg:
             mode = verifier_cfg.get("mode", "shadow")
-            if mode not in ("shadow", "active"):
+            if mode == "active":
+                raise ConfigError(
+                    "verification mode 'active' is not available in Phase 1A "
+                    "(only 'shadow'); active verification arrives in later phases"
+                )
+            if mode != "shadow":
                 raise ConfigError(f"unknown verification mode: {mode}")
+            if not isinstance(verifier_cfg.get("enabled", True), bool):
+                raise ConfigError("verification.enabled must be a boolean")
 
         if self.model.get("provider") not in (None, "openai_compatible", "mock"):
             raise ConfigError(f"unknown model provider: {self.model.get('provider')}")
@@ -166,6 +173,12 @@ class HarnessConfig:
     @property
     def reliability_enabled(self) -> bool:
         return bool(self.reliability.get("enabled", False))
+
+    @property
+    def verification_enabled(self) -> bool:
+        """Verification runs only when reliability AND verification are on."""
+        verifier_cfg = self.reliability.get("verification") or {}
+        return self.reliability_enabled and bool(verifier_cfg.get("enabled", True))
 
     @property
     def verification_mode(self) -> str:

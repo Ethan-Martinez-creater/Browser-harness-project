@@ -45,7 +45,7 @@ class NoProgressDetector:
                 kind=FailureKind.NO_PROGRESS,
                 severity=FailureSeverity.ERROR if seen_before else FailureSeverity.WARNING,
                 source=self.source,
-                signature="no_progress:state_unchanged_reward_zero",
+                signature=f"no_progress:{ctx.post_fingerprint}",
                 recoverable=True,
                 evidence={
                     "fingerprint": ctx.post_fingerprint,

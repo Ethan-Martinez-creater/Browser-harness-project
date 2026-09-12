@@ -73,6 +73,7 @@ class EpisodeRunner:
         model_name: str | None = None,
         manifest_extra: dict | None = None,
         verifier: StepVerifier | None = None,
+        verification_mode: str = "shadow",
     ):
         self.agent = agent
         self.env = env
@@ -85,6 +86,7 @@ class EpisodeRunner:
         # Phase 1A: verifier runs in shadow mode only — it observes and
         # records, it never changes the control flow. None = fully off.
         self.verifier = verifier
+        self.verification_mode = verification_mode
 
     # -- main entry ---------------------------------------------------------
 
@@ -269,7 +271,7 @@ class EpisodeRunner:
                             component="verification_engine",
                             outcome=verification_summary,
                             data={
-                                "mode": "shadow",
+                                "mode": self.verification_mode,
                                 "signals": [
                                     s.model_dump(mode="json")
                                     for s in verification.signals
@@ -365,6 +367,11 @@ class EpisodeRunner:
             error_message=error_message,
             verification_count=sum(
                 1 for s in state.steps if s.verification_status is not None
+            ),
+            verifications_with_signal=sum(
+                1
+                for s in state.steps
+                if s.verification_status not in (None, "pass")
             ),
             failure_signal_count=state.reliability.total_failure_signals,
             failure_kind_counts=kind_counts,

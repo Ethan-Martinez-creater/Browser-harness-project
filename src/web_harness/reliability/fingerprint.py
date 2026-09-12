@@ -36,10 +36,12 @@ def _normalize(text: str | None) -> str:
 
 def compute_fingerprint(observation: Observation) -> ObservationFingerprint:
     url_hash = _sha256(_normalize(observation.url))
+    # open_pages keep environment order: tab order is executable state
+    # (tab_focus(index) semantics), so [A,B] and [B,A] must differ.
     content_parts = [
         _normalize(observation.axtree),
         _normalize(observation.dom),
-        *sorted(_normalize(p) for p in observation.open_pages),
+        *(_normalize(p) for p in observation.open_pages),
     ]
     content_hash = _sha256("\n\x00\n".join(content_parts))
     combined_hash = _sha256(f"{url_hash}\x00{content_hash}")
@@ -73,3 +75,15 @@ def normalize_error_signature(text: str | None, limit: int = 120) -> str:
     cleaned = " ".join(text.lower().split())
     cleaned = re.sub(r"\d+", "<n>", cleaned)
     return cleaned[:limit]
+
+
+def extract_action_type(action: str | None) -> str:
+    """Stable action function name from an action string.
+
+    `click(bid='13')` -> `click`; unknown/malformed actions normalize to
+    `unknown`. Dynamic arguments (bids, values) never enter the signature.
+    """
+    if not action:
+        return "unknown"
+    m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(", action)
+    return m.group(1).lower() if m else "unknown"

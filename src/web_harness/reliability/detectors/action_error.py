@@ -10,7 +10,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from web_harness.core.reliability import FailureKind, FailureSeverity, FailureSignal
-from web_harness.reliability.fingerprint import normalize_error_signature
+from web_harness.reliability.fingerprint import (
+    extract_action_type,
+    normalize_error_signature,
+)
 
 if TYPE_CHECKING:
     from web_harness.reliability.verifier import VerificationContext
@@ -23,16 +26,20 @@ class ActionErrorDetector:
         error = ctx.env_step.action_error
         if not error:
             return []
+        action_type = extract_action_type(ctx.action)
         return [
             FailureSignal(
                 kind=FailureKind.ACTION_ERROR,
                 severity=FailureSeverity.ERROR,
                 source=self.source,
-                signature=f"action_error:{normalize_error_signature(error)}",
+                signature=(
+                    f"action_error:{action_type}:{normalize_error_signature(error)}"
+                ),
                 retryable=False,  # browser actions may have had side effects
                 recoverable=True,
                 evidence={
                     "action": ctx.action,
+                    "action_type": action_type,
                     "action_error": error[:500],
                 },
             )

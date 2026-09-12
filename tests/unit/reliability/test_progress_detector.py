@@ -53,6 +53,21 @@ def test_action_error_step_is_not_no_progress():
     assert NoProgressDetector().detect(ctx) == []
 
 
+def test_signature_distinguishes_states():
+    """No-progress on different states must produce different signatures (R1)."""
+    s1 = make_fake_observation(url="http://fake.local/stuck1")
+    s2 = make_fake_observation(url="http://fake.local/stuck2")
+    sig1 = NoProgressDetector().detect(
+        make_ctx(pre=s1, post=s1, env_step=EnvironmentStep(observation=s1.model_copy(deep=True)))
+    )[0].signature
+    sig2 = NoProgressDetector().detect(
+        make_ctx(pre=s2, post=s2, env_step=EnvironmentStep(observation=s2.model_copy(deep=True)))
+    )[0].signature
+    assert sig1.startswith("no_progress:")
+    assert sig2.startswith("no_progress:")
+    assert sig1 != sig2
+
+
 def test_rewarded_step_is_not_no_progress():
     same = make_fake_observation(url="http://fake.local/same")
     step = EnvironmentStep(observation=same.model_copy(deep=True), reward=1.0)

@@ -42,6 +42,15 @@ def test_fingerprint_covers_url_and_open_pages():
     assert fingerprint_of(a) != fingerprint_of(c)
 
 
+def test_fingerprint_preserves_tab_order():
+    """[A,B] and [B,A] must differ: tab order is executable state (R2)."""
+    ab = make_fake_observation(url="http://x/a")
+    ab.open_pages = ["http://x/a", "http://x/b"]
+    ba = make_fake_observation(url="http://x/a")
+    ba.open_pages = ["http://x/b", "http://x/a"]
+    assert fingerprint_of(ab) != fingerprint_of(ba)
+
+
 def test_fingerprint_structure():
     fp = compute_fingerprint(make_fake_observation(url="http://x/"))
     assert fp.url_hash and fp.content_hash and fp.combined_hash

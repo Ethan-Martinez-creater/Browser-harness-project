@@ -145,6 +145,7 @@ class RunResult(BaseModel):
     error_message: str | None = None
     # Phase 1A verification summary (details live in events.jsonl)
     verification_count: int = 0
+    verifications_with_signal: int = 0
     failure_signal_count: int = 0
     failure_kind_counts: dict[str, int] = Field(default_factory=dict)
 

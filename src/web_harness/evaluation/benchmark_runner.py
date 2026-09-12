@@ -124,6 +124,8 @@ def run_benchmark(
         raise ConfigError("no tasks configured for benchmark run")
     headless = cfg.headless if headless is None else headless
 
+    # canonical resolved experiment config: the single source for the config
+    # copy, experiment manifest hash AND run manifest hashes (B1)
     resolved = {
         "benchmark": benchmark_name,
         "tasks": tasks,
@@ -133,7 +135,9 @@ def run_benchmark(
         "runtime": cfg.runtime,
         "trace": cfg.trace,
         "environment": cfg.environment,
+        "reliability": sanitize_config(cfg.reliability),
     }
+    canonical_config_hash = config_hash(resolved)
 
     experiment_id = new_experiment_id(f"{benchmark_name}-smoke")
     exp_dir = Path(experiments_root) / experiment_id
@@ -147,7 +151,7 @@ def run_benchmark(
         "experiment_id": experiment_id,
         "timestamp": now_utc_iso(),
         "git_commit": git_commit(),
-        "config_hash": config_hash(resolved),
+        "config_hash": canonical_config_hash,
         "python_version": sys.version.split()[0],
         "model_provider": cfg.model.get("provider"),
         "model_name": cfg.model.get("model"),
@@ -173,10 +177,11 @@ def run_benchmark(
                 bootstrap_action=cfg.bootstrap_action,
             )
 
-    # Phase 1A: verifier only when reliability is enabled (shadow mode);
-    # disabled means zero behavioral or cost delta vs the Phase 0 baseline.
+    # Phase 1A: verifier only when reliability is enabled AND verification is
+    # enabled AND mode == shadow (B2); anything else means zero behavioral or
+    # cost delta vs the Phase 0 baseline.
     verifier = None
-    if cfg.reliability_enabled:
+    if cfg.verification_enabled and cfg.verification_mode == "shadow":
         from web_harness.reliability.verifier import DefaultStepVerifier
 
         verifier_cfg = cfg.reliability.get("verification") or {}
@@ -205,8 +210,9 @@ def run_benchmark(
                 save_model_responses=cfg.save_model_responses,
                 model_provider=provider,
                 model_name=cfg.model.get("model"),
-                manifest_extra={"config_hash": cfg.hash},
+                manifest_extra={"config_hash": canonical_config_hash},
                 verifier=verifier,
+                verification_mode=cfg.verification_mode,
             )
             logger.info("episode start: %s seed=%s", task.task_id, seed)
             result = runner.run(task, run_id=new_run_id())
