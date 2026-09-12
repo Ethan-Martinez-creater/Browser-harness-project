@@ -66,14 +66,19 @@ class ModelConfig(dict):
 class HarnessConfig:
     """Typed wrapper over the harness baseline config (no secret values)."""
 
+    # keys that may never carry a literal secret in YAML (R3 fail-fast)
+    FORBIDDEN_SECRET_KEYS = ("api_key", "token", "secret", "password")
+
     def __init__(self, data: dict[str, Any], *, source_path: Path | None = None):
         self.data = data
         self.source_path = source_path
+        self._validate_no_literal_secrets(data)
         try:
             self.model = data["model"]
             self.agent = data.get("agent", {})
             self.runtime = data.get("runtime", {})
             self.trace = data.get("trace", {})
+            self.environment = data.get("environment", {})
         except KeyError as exc:
             raise ConfigError(f"missing config section: {exc}") from exc
 
@@ -81,6 +86,21 @@ class HarnessConfig:
             raise ConfigError(f"unknown model provider: {self.model.get('provider')}")
         if self.model.get("provider") == "openai_compatible" and not self.model.get("model"):
             raise ConfigError("model.model is required for provider openai_compatible")
+
+    @classmethod
+    def _validate_no_literal_secrets(cls, data: dict[str, Any]) -> None:
+        def walk(node: Any, path: str) -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    key_l = str(key).lower()
+                    if key_l in cls.FORBIDDEN_SECRET_KEYS and isinstance(value, str) and value:
+                        raise ConfigError(
+                            f"literal secret in config at '{path}{key}': secrets must "
+                            "only come from environment variables (use *_env keys)"
+                        )
+                    walk(value, f"{path}{key}.")
+
+        walk(data, "")
 
     @classmethod
     def from_yaml(cls, path: Path | str) -> HarnessConfig:
@@ -120,3 +140,12 @@ class HarnessConfig:
     @property
     def save_screenshots(self) -> bool:
         return bool(self.trace.get("save_screenshots", False))
+
+    @property
+    def bootstrap_action(self) -> str | None:
+        """Explicit environment bootstrap action (see ADR-004); None = disabled."""
+        return self.environment.get("bootstrap_action")
+
+    @property
+    def headless(self) -> bool:
+        return bool(self.environment.get("headless", True))

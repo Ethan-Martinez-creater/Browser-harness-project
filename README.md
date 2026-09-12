@@ -113,23 +113,35 @@ integration test drives the real MiniWoB environment with a scripted agent
 ```text
 configs/            harness and benchmark configs (no secrets)
 docs/               architecture, benchmark strategy, trace schema, ADRs
-scripts/            environment probe and registry inspection
+scripts/            environment probe, registry inspection, report renderer
 src/web_harness/
   core/             data models, error taxonomy, ids
   models/           ModelAdapter: mock + OpenAI-compatible
-  agents/           BaselineAgent + PromptBuilder
-  env/              EnvironmentAdapter: BrowserGym adapter + fake env
+  agents/           BaselineAgent + PromptBuilder (contract-driven prompts)
+  env/              EnvironmentAdapter: action contract, BrowserGym adapter,
+                    observation normalizer, fake env
   runtime/          EpisodeRunner + RunState (the self-owned loop)
   observability/    TraceRecorder
   evaluation/       metrics + benchmark runner
-  config/           YAML config loading
+  config/           YAML config loading (rejects literal secrets)
   cli.py            web-harness CLI
 tests/unit          unit tests (mock model, fake env)
-tests/integration   real MiniWoB environment test
+tests/integration   real MiniWoB environment + action-contract tests
 reports/phase0/     probe results and benchmark reports
 runs/               per-episode traces (gitignored)
 experiments/        benchmark outputs (gitignored)
 ```
+
+## Action contract & environment bootstrap
+
+- The prompt's action schema is generated from the environment's actual
+  BrowserGym `HighLevelActionSet` (single source of truth,
+  `env/action_contract.py`); the same instance is installed as the env's
+  action mapping, so every advertised action is executable.
+- MiniWoB pages render after DOM-load, so MiniWoB configs enable an explicit,
+  verified environment bootstrap action (`noop(wait_ms=500)`, recorded in
+  every run manifest, see `docs/adr/ADR-004-miniwob-bootstrap-action.md`).
+  Other benchmarks keep it disabled.
 
 ## Phase 0 limitations
 

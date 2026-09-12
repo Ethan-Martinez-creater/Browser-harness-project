@@ -9,27 +9,17 @@ digest, the available action schema and the required output format.
 from __future__ import annotations
 
 from web_harness.core.models import Observation, PromptBundle, StepRecord, TaskSpec
-
-ACTION_SCHEMA = """\
-You control a browser through ONE high-level action per step. Available actions:
-
-  click(bid='ID')            click the element with the given bid
-  type(bid='ID', value='TEXT')   focus element and type text (replaces content)
-  select_option(bid='ID', option='TEXT')  pick an option in a <select>
-  check_uncheck(bid='ID')    toggle a checkbox
-  scroll(x=0, y=300)         scroll the page
-  noop()                     do nothing this step
-  new_tab()                  open a new empty tab
-
-`bid` values are the bracketed ids in the accessibility tree, e.g. `[42] button 'OK'`
-means you can `click(bid='42')`."""
+from web_harness.env.action_contract import ActionContract
 
 OUTPUT_FORMAT = """\
 Respond with ONE JSON object and nothing else:
 
-{"action": "<one action string>", "short_reason": "<max ~15 words, why>"}
+{"action": "<one action from the list above>", "short_reason": "<max ~15 words, why>"}
 
-Example: {"action": "click(bid='13')", "short_reason": "target button found"}"""
+The `action` value must be ONE complete, executable action call copied from
+the list above, with ALL of its required arguments inline (an element action
+must include the target element id directly in the call). Never split
+arguments into separate JSON fields, and never output a bare action name."""
 
 
 def summarize_history(history: list[StepRecord], max_steps: int) -> str:
@@ -58,13 +48,14 @@ class PromptBuilder:
         task: TaskSpec,
         observation: Observation,
         history: list[StepRecord],
+        action_contract: ActionContract,
     ) -> PromptBundle:
         system = (
             "You are a careful web automation agent. You complete the given "
             "task by choosing exactly one browser action at a time, based on "
             "the current accessibility tree. Prefer the simplest action that "
             "makes progress toward the goal.\n\n"
-            f"{ACTION_SCHEMA}\n\n{OUTPUT_FORMAT}"
+            f"{action_contract.render_for_prompt()}\n\n{OUTPUT_FORMAT}"
         )
         history_digest = summarize_history(history, self.max_history_steps)
         view = observation.axtree or "(accessibility tree unavailable)"

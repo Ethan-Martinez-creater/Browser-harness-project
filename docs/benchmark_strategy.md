@@ -43,9 +43,13 @@ run_ids.txt     run ids → full traces under runs/<run_id>/
 
 Reproducibility requirements:
 - all result-influencing parameters live in config (hashed into manifests)
-- secrets never enter config or traces
+- secrets never enter config or traces; configs with literal secret keys are
+  rejected at load time and sanitized before persistence
 - traces are machine-readable (see `trace_schema.md`), enabling later
   re-analysis and cross-experiment comparison
+- Markdown reports are generated from `summary.json` / `episodes.csv` by
+  `scripts/render_benchmark_report.py` — benchmark numbers are never
+  hand-written into reports
 
 ## Scaling path
 

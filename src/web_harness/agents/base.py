@@ -1,8 +1,9 @@
 """Agent abstraction.
 
 An agent turns (task, current observation, short history) into exactly one
-action decision per step. Everything else — planning, memory, verification —
-is deliberately out of scope for the Phase 0 baseline.
+action decision per step, using the action contract provided by the current
+environment. Everything else — planning, memory, verification — is
+deliberately out of scope for the Phase 0 baseline.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from typing import Protocol
 from pydantic import BaseModel
 
 from web_harness.core.models import ActionDecision, Observation, StepRecord, TaskSpec
+from web_harness.env.action_contract import ActionContract
 from web_harness.models.base import ModelOutput
 
 
@@ -29,4 +31,5 @@ class Agent(Protocol):
         task: TaskSpec,
         observation: Observation,
         history: list[StepRecord],
+        action_contract: ActionContract,
     ) -> AgentTurn: ...

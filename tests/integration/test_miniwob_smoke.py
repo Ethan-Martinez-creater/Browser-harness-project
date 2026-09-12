@@ -26,7 +26,7 @@ class ScriptedClickAgent:
     def __init__(self):
         self.prompts: list[PromptBundle] = []
 
-    def decide(self, *, task, observation: Observation, history: list[StepRecord]):
+    def decide(self, *, task, observation: Observation, history: list[StepRecord], action_contract):
         import re
 
         from web_harness.core.models import ActionDecision

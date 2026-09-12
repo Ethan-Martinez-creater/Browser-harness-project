@@ -87,27 +87,6 @@ class EpisodeRunner:
             save_prompts=self.save_prompts,
             save_model_responses=self.save_model_responses,
         )
-        recorder.write_manifest(
-            {
-                "run_id": run_id,
-                "timestamp": now_utc_iso(),
-                "git_commit": git_commit(),
-                "config_hash": self.manifest_extra.get("config_hash"),
-                "python_version": sys.version.split()[0],
-                "platform": platform.platform(),
-                "model_provider": self.model_provider,
-                "model_name": self.model_name,
-                "benchmark": task.benchmark,
-                "task_id": task.task_id,
-                "seed": task.seed,
-                "max_steps": task.max_steps,
-                **{
-                    k: v
-                    for k, v in self.manifest_extra.items()
-                    if k != "config_hash"
-                },
-            }
-        )
 
         state = RunState(run_id=run_id, task=task)
         started = time.monotonic()
@@ -117,10 +96,36 @@ class EpisodeRunner:
         error_message: str | None = None
         final_reward = 0.0
 
+        def write_manifest() -> None:
+            bootstrap = getattr(self.env, "bootstrap_action_executed", None)
+            recorder.write_manifest(
+                {
+                    "run_id": run_id,
+                    "timestamp": now_utc_iso(),
+                    "git_commit": git_commit(),
+                    "config_hash": self.manifest_extra.get("config_hash"),
+                    "python_version": sys.version.split()[0],
+                    "platform": platform.platform(),
+                    "model_provider": self.model_provider,
+                    "model_name": self.model_name,
+                    "benchmark": task.benchmark,
+                    "task_id": task.task_id,
+                    "seed": task.seed,
+                    "max_steps": task.max_steps,
+                    "environment_bootstrap_action": bootstrap,
+                    **{
+                        k: v
+                        for k, v in self.manifest_extra.items()
+                        if k != "config_hash"
+                    },
+                }
+            )
+
         try:
             try:
                 observation = self.env.reset(task)
             except HarnessError as exc:
+                write_manifest()
                 error_type, error_message = exc.error_type, exc.message
                 logger.error("env reset failed: %s", exc.message)
                 return self._finish(
@@ -128,22 +133,29 @@ class EpisodeRunner:
                     started, started_at, run_dir,
                 )
             except Exception as exc:  # noqa: BLE001 - normalized, never escapes
+                write_manifest()
                 error_type, error_message = ErrorType.ENVIRONMENT_INIT_ERROR, str(exc)
                 logger.exception("unexpected env reset failure")
                 return self._finish(
                     recorder, state, RunStatus.ERROR, error_type, error_message,
                     started, started_at, run_dir,
                 )
+            write_manifest()
             state.current_observation = observation
+            # the environment is the single source of truth for the action space
+            action_contract = self.env.action_contract()
 
             # -- explicit harness loop ------------------------------------
             for step_idx in range(task.max_steps):
                 t0 = time.monotonic()
 
-                # decide
+                # decide (on the pre-action observation)
                 try:
                     turn, prompt = self.agent.decide(
-                        task=task, observation=observation, history=state.steps
+                        task=task,
+                        observation=observation,
+                        history=state.steps,
+                        action_contract=action_contract,
                     )
                 except ModelOutputParseError as exc:
                     recorder.write_failed_model_output(step_idx, exc.raw_text)
@@ -187,7 +199,8 @@ class EpisodeRunner:
                     )
                 step_latency_ms = (time.monotonic() - t0) * 1000.0
 
-                # record
+                # record: obs_N = what the model saw, next_obs_N = what the
+                # action produced (step-level failure, not episode failure)
                 mo = turn.model_output
                 step = StepRecord(
                     run_id=run_id,
@@ -203,15 +216,23 @@ class EpisodeRunner:
                     output_tokens=mo.output_tokens if mo else None,
                     model_name=mo.model_name if mo else None,
                     short_reason=turn.decision.short_reason,
+                    error_type=(
+                        ErrorType.ACTION_EXECUTION_ERROR
+                        if env_step.action_error
+                        else None
+                    ),
                 )
                 step = recorder.record_step(
                     step,
-                    observation=env_step.observation,
+                    observation=observation,
+                    next_observation=env_step.observation,
                     prompt=prompt,
                     model_output=mo,
                 )
                 state.steps.append(step)
                 state.current_observation = env_step.observation
+                # the next decision must see what this action produced
+                observation = env_step.observation
                 final_reward = env_step.reward
 
                 # terminate?

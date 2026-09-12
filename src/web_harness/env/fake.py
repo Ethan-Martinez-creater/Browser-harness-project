@@ -7,7 +7,26 @@ No browser, no network: state transitions are driven by a scripted list of
 from __future__ import annotations
 
 from web_harness.core.models import EnvironmentStep, Observation, TaskSpec
+from web_harness.env.action_contract import ActionContract, ActionSpec
 from web_harness.env.observation import ObservationNormalizer
+
+FAKE_CONTRACT = ActionContract(
+    benchmark="fake",
+    actions=[
+        ActionSpec(
+            name="click",
+            signature="click(bid: str)",
+            description="Click the element with the given bid.",
+            examples=["click(bid='1')"],
+        ),
+        ActionSpec(
+            name="noop",
+            signature="noop(wait_ms: float = 1000)",
+            description="Do nothing for a short wait.",
+            examples=["noop()"],
+        ),
+    ],
+)
 
 
 class FakeEnvironment:
@@ -68,6 +87,9 @@ class FakeEnvironment:
 
     def close(self) -> None:
         self.close_calls += 1
+
+    def action_contract(self) -> ActionContract:
+        return FAKE_CONTRACT.model_copy(deep=True)
 
 
 def make_fake_observation(goal: str = "fake goal", url: str = "http://fake.local") -> Observation:

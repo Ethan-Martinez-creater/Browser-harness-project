@@ -39,3 +39,11 @@ trace:
   save_prompts: true
   save_model_responses: true
   save_screenshots: false
+
+environment:
+  # MiniWoB renders task HTML after DOM-load; without this explicit,
+  # verified bootstrap the first observation may have an empty axtree.
+  # See docs/adr/ADR-004-miniwob-bootstrap-action.md. Disabled by default
+  # for other benchmarks.
+  bootstrap_action: "noop(wait_ms=500)"
+  headless: true

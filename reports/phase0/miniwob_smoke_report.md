@@ -1,74 +1,80 @@
 # Phase 0 MiniWoB Smoke Benchmark Report
 
-- Date: 2026-09-12
-- Experiment: `miniwob-smoke-20260912T025451Z-bf9a9d90` (12 tasks × seed 0, serial)
-- Model: `deepseek-flash` via OpenAI-compatible endpoint (temperature 0)
-- Agent: Phase 0 baseline (text-only, axtree input, single action per step)
-- Config: `configs/benchmarks/miniwob_smoke.yaml` (`max_steps = 20`)
+- Experiment: `miniwob-smoke-20260912T035931Z-85ec8bc0` (auto-generated from summary.json / episodes.csv)
+- Tasks: 12 × seeds [0], serial
+- Model: `deepseek-flash` (provider `openai_compatible`, temperature 0.0)
+- Agent: `baseline`, max_steps 20
+- Environment bootstrap: noop(wait_ms=500)
 
-> **Scope warning**: this is the Phase 0 engineering smoke run. 12 episodes ×
-> 1 seed say nothing definitive about model or harness capability. It
-> validates that the runtime, adapter, tracing, benchmark runner and metrics
-> work end to end, and establishes the baseline reference point.
+> **Scope warning**: this is the Phase 0 engineering smoke run.
+It validates the measurement system (runtime, adapter, tracing,
+benchmark runner, metrics) and establishes the baseline reference.
+It is not a model-capability conclusion.
 
 ## Per-episode results
 
-| task | success | reward | steps | duration (s) | input tokens | output tokens | action errors | error type |
-|---|---:|---:|---:|---:|---:|---:|---:|---|
-| click-test | ✅ | 1.0 | 1 | 14.9 | 459 | 68 | 0 | TASK_TERMINATED |
-| click-button | ✅ | 1.0 | 1 | 13.3 | 503 | 52 | 0 | TASK_TERMINATED |
-| enter-text | ❌ | 0.0 | 4 | 34.4 | 1508 | 793 | 2 | MODEL_OUTPUT_PARSE_ERROR |
-| choose-list | ✅ | 1.0 | 1 | 13.8 | 552 | 35 | 0 | TASK_TERMINATED |
-| click-checkboxes | ❌ | 0.0 | 7 | 51.7 | 3533 | 622 | 1 | MODEL_OUTPUT_PARSE_ERROR |
-| click-link | ✅ | 1.0 | 5 | 48.4 | 2919 | 12313 | 1 | TASK_TERMINATED |
-| login-user | ❌ | 0.0 | 7 | 54.7 | 3589 | 1790 | 5 | MODEL_OUTPUT_PARSE_ERROR |
-| read-table | ❌ | 0.0 | 20 | 118.8 | 14457 | 8279 | 17 | MAX_STEPS_EXCEEDED |
-| navigate-tree | ✅ | 1.0 | 1 | 14.5 | 535 | 145 | 0 | TASK_TERMINATED |
-| use-autocomplete | ❌ | 0.0 | 20 | 118.5 | 12741 | 8147 | 15 | MAX_STEPS_EXCEEDED |
-| choose-date-easy | ❌ | 0.0 | 7 | 54.5 | 3394 | 1560 | 5 | MODEL_OUTPUT_PARSE_ERROR |
-| order-food | ❌ | 0.0 | 2 | 36.3 | 921 | 10854 | 0 | MODEL_API_ERROR |
+| task | seed | status | success | reward | steps | duration (s) | input tokens | output tokens | action errors | error type |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---|
+| click-test | 0 | success | ✅ | 1 | 1 | 12.750 | 1423 | 40 | 0 | TASK_TERMINATED |
+| click-button | 0 | success | ✅ | 1 | 1 | 8.844 | 1467 | 50 | 0 | TASK_TERMINATED |
+| enter-text | 0 | success | ✅ | 1 | 2 | 13.187 | 2908 | 101 | 0 | TASK_TERMINATED |
+| choose-list | 0 | success | ✅ | 1 | 1 | 9.203 | 1516 | 73 | 0 | TASK_TERMINATED |
+| click-checkboxes | 0 | success | ✅ | 1 | 2 | 18.391 | 3029 | 95 | 0 | TASK_TERMINATED |
+| click-link | 0 | error | ❌ | 0 | 5 | 248.531 | 6180 | 11105 | 1 | MODEL_API_ERROR |
+| login-user | 0 | success | ✅ | 1 | 3 | 15.860 | 4587 | 146 | 0 | TASK_TERMINATED |
+| read-table | 0 | success | ✅ | 1 | 2 | 15.360 | 3202 | 125 | 0 | TASK_TERMINATED |
+| navigate-tree | 0 | success | ✅ | 1 | 1 | 10.094 | 1499 | 174 | 0 | TASK_TERMINATED |
+| use-autocomplete | 0 | success | ✅ | 1 | 3 | 15.547 | 4548 | 475 | 0 | TASK_TERMINATED |
+| choose-date-easy | 0 | success | ✅ | 1 | 4 | 20.125 | 7828 | 538 | 1 | TASK_TERMINATED |
+| order-food | 0 | error | ❌ | 0 | 1 | 187.750 | 0 | 0 | 0 | MODEL_API_ERROR |
 
 ## Aggregate metrics
 
 | metric | value |
 |---|---:|
-| success_rate | 5/12 = 0.417 |
-| mean_reward | 0.417 |
-| mean_steps | 6.33 |
-| median_steps | 4.5 |
-| mean_duration_s | 59.4 |
-| total_input_tokens | 45,111 |
-| total_output_tokens | 44,658 |
-| action_error_rate (episodes with ≥1 action error) | 0.583 |
+| success_rate | 0.833 (10/12) |
+| mean_reward | 0.833 |
+| mean_steps | 2.167 |
+| median_steps | 2.0 |
+| mean_duration_s | 47.970 |
+| total_input_tokens | 38187 |
+| total_output_tokens | 12922 |
+| action_error_rate | 0.167 |
 
-## Observations (engineering, not capability conclusions)
+`estimated_cost` is null by design: the harness never guesses
+prices without a reliable price table; token counts above are
+the authoritative usage record.
 
-1. **Pipeline is healthy end to end**: all 12 episodes produced complete
-   traces (manifest, steps.jsonl, artifacts, result.json) and structured
-   error classification; failures were cleanly recorded rather than crashing
-   the benchmark runner.
-2. **Output format drift is the dominant failure (4/12)**:
-   `MODEL_OUTPUT_PARSE_ERROR`. In multi-step tasks the model increasingly
-   deviates from the required JSON action object (partly correlated with
-   action errors in the previous step). This is exactly the kind of failure
-   the Phase 1 mechanisms (verification/retry) are designed to address —
-   recorded here as the baseline behavior, *not* patched away.
-3. **Looping behavior**: `read-table` and `use-autocomplete` exhausted 20
-   steps with many action errors, suggesting the model retries the same
-   failing action — future ablation targets for verification/recovery.
-4. **One infrastructure failure**: `order-food` died on a provider
-   `InternalServerError` (after a very large completion of 10.8k tokens).
-   Recorded as `MODEL_API_ERROR`; no retry logic exists in Phase 0 by design.
-5. **Cost note**: `estimated_cost` is null (no reliable price table for the
-   endpoint); token counts above are the authoritative usage record.
+## Qualitative observations (auto-generated numbers excluded by design)
+
+1. **Measurement system validated end to end**: all 12 episodes produced
+   complete traces with the corrected semantics (`obs_N` = decision input,
+   `next_obs_N` = action result), strict-JSON `manifest.json`/`summary.json`,
+   and structured step-level error classification.
+2. **Action contract fix eliminated format drift**: after replacing the
+   hand-written action schema with the contract rendered from the
+   environment's actual `HighLevelActionSet` (plus an explicit
+   output-format instruction), zero `MODEL_OUTPUT_PARSE_ERROR` episodes
+   remain, versus the dominant share of failures in the pre-remediation run.
+3. **Looping behavior resolved as a side effect**: tasks that previously
+   exhausted 20 steps (`read-table`, `use-autocomplete`) now terminate in a
+   few steps — the model receives a correct, executable tool contract and a
+   fresh post-action observation each step.
+4. **Remaining failures are infrastructure, not agent behavior**: two
+   episodes ended on provider `InternalServerError` (`MODEL_API_ERROR`);
+   with no retry logic in Phase 0 by design, they are recorded as-is.
+5. `estimated_cost` is null by design; token counts in the tables above are
+   the authoritative usage record.
+6. Per remediation instructions, this report's numbers are generated by
+   `scripts/render_benchmark_report.py` from `summary.json` / `episodes.csv`;
+   no benchmark value in this file was hand-written.
 
 ## Reproduction
 
 ```bash
-export MODEL_BASE_URL=...   # OpenAI-compatible endpoint
-export MODEL_API_KEY=...    # or fill in .env
+export MODEL_BASE_URL=...   # OpenAI-compatible endpoint (or fill .env)
+export MODEL_API_KEY=...
 uv run web-harness benchmark --config configs/benchmarks/miniwob_smoke.yaml
+uv run python scripts/render_benchmark_report.py --summary <exp>/summary.json \
+    --episodes <exp>/episodes.csv --output reports/phase0/miniwob_smoke_report.md
 ```
-
-Full traces: `runs/run-20260912T0255xx*`..`runs/run-20260912T0302xx*` (see
-`run_ids.txt` in the experiment directory).

@@ -33,6 +33,23 @@ def _write_json(path: Path, payload: dict) -> None:
     _write_text(path, json.dumps(payload, indent=2, ensure_ascii=False, default=str))
 
 
+def _observation_text(obs: Observation) -> str:
+    parts = [
+        f"# goal\n{obs.goal}",
+        f"# url\n{obs.url}",
+        "# open_pages\n" + "\n".join(obs.open_pages),
+        f"# last_action\n{obs.last_action or ''}",
+        f"# last_action_error\n{obs.last_action_error or ''}",
+        f"# truncated\n{obs.truncated}",
+        f"# axtree\n{obs.axtree or ''}",
+    ]
+    if obs.dom:
+        parts.append(f"# dom\n{obs.dom}")
+    if obs.screenshot_path:
+        parts.append(f"# screenshot: {obs.screenshot_path}")
+    return "\n\n".join(parts)
+
+
 class TraceRecorder:
     def __init__(
         self,
@@ -73,10 +90,18 @@ class TraceRecorder:
         step: StepRecord,
         *,
         observation: Observation | None = None,
+        next_observation: Observation | None = None,
         prompt: PromptBundle | None = None,
         model_output: ModelOutput | None = None,
     ) -> StepRecord:
         """Persist one step with its artifacts; returns the updated record.
+
+        Trace semantics (B2): `observation` is the PRE-action observation the
+        model actually decided on (matches prompt_N / model_N);
+        `next_observation` is the POST-action result of executing the action.
+        obs_(N+1) must always equal next_obs_N semantically. When a step fails
+        before an action executes, next_observation is left unset — it is
+        never fabricated.
 
         Artifact names are deterministic (zero-padded step index). Reference
         fields on the StepRecord are filled in before writing to steps.jsonl.
@@ -86,21 +111,13 @@ class TraceRecorder:
 
         if observation is not None:
             obs_ref = f"artifacts/obs_{pad}.txt"
-            parts = [
-                f"# goal\n{observation.goal}",
-                f"# url\n{observation.url}",
-                "# open_pages\n" + "\n".join(observation.open_pages),
-                f"# last_action\n{observation.last_action or ''}",
-                f"# last_action_error\n{observation.last_action_error or ''}",
-                f"# truncated\n{observation.truncated}",
-                f"# axtree\n{observation.axtree or ''}",
-            ]
-            if observation.dom:
-                parts.append(f"# dom\n{observation.dom}")
-            if observation.screenshot_path:
-                parts.append(f"# screenshot: {observation.screenshot_path}")
-            _write_text(self.run_dir / obs_ref, "\n\n".join(parts))
+            _write_text(self.run_dir / obs_ref, _observation_text(observation))
             step.observation_ref = obs_ref
+
+        if next_observation is not None:
+            next_ref = f"artifacts/next_obs_{pad}.txt"
+            _write_text(self.run_dir / next_ref, _observation_text(next_observation))
+            step.next_observation_ref = next_ref
 
         if prompt is not None and self.save_prompts:
             prompt_ref = f"artifacts/prompt_{pad}.txt"

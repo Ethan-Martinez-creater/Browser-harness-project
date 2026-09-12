@@ -25,3 +25,7 @@ trace:
 
 benchmark:
   config: configs/benchmarks/miniwob_smoke.yaml
+
+environment:
+  bootstrap_action: "noop(wait_ms=500)"
+  headless: true

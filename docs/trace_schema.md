@@ -12,14 +12,27 @@ runs/<run_id>/
   steps.jsonl          one StepRecord per line, fsynced after every step
   result.json          final RunResult
   artifacts/
-    obs_000.txt        normalized observation (goal, url, pages, axtree, ...)
+    obs_000.txt        PRE-action observation (the model's decision input)
     prompt_000.txt     exact system+user prompt sent to the model
     model_000.json     ModelOutput (decision, tokens; no raw CoT)
     raw_000.txt        raw model response text (if enabled)
+    next_obs_000.txt   POST-action observation (result of the action)
+    raw_failed_NNN.txt raw model output of a step whose parsing failed
     screenshot_*.png   optional (save_screenshots: false by default)
 ```
 
 Artifact names are deterministic (zero-padded step index).
+
+## Step trace semantics
+
+```text
+obs_N      →  prompt_N  →  model_N  →  action_N  →  next_obs_N
+(decision input)                      (executed)   (action result)
+```
+
+`obs_(N+1)` must always equal `next_obs_N` semantically. When a step fails
+before an action executes (e.g. `MODEL_OUTPUT_PARSE_ERROR`), `next_obs_N` is
+left unset — it is never fabricated.
 
 ## manifest.json
 
@@ -36,9 +49,13 @@ Artifact names are deterministic (zero-padded step index).
   "benchmark": "miniwob",
   "task_id": "click-test",
   "seed": 0,
-  "max_steps": 20
+  "max_steps": 20,
+  "environment_bootstrap_action": "noop(wait_ms=500)"
 }
 ```
+
+`environment_bootstrap_action` is provenance for the explicit, verified
+environment bootstrap (see `ADR-004`); `null` when disabled.
 
 ## steps.jsonl — StepRecord per line
 
@@ -47,8 +64,9 @@ Artifact names are deterministic (zero-padded step index).
 | run_id | str | |
 | step_index | int | 0-based |
 | timestamp | ISO-8601 UTC | |
-| url | str? | page URL before the action |
-| observation_ref | str? | `artifacts/obs_NNN.txt` |
+| url | str? | page URL before the action (pre-action observation) |
+| observation_ref | str? | `artifacts/obs_NNN.txt` — pre-action, decision input |
+| next_observation_ref | str? | `artifacts/next_obs_NNN.txt` — post-action result |
 | prompt_ref | str? | `artifacts/prompt_NNN.txt` (configurable) |
 | model_response_ref | str? | `artifacts/model_NNN.json` (configurable) |
 | action | str? | executed action; null when decision failed |

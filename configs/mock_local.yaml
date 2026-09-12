@@ -20,3 +20,7 @@ trace:
   save_prompts: true
   save_model_responses: true
   save_screenshots: false
+
+environment:
+  bootstrap_action: "noop(wait_ms=500)"
+  headless: true

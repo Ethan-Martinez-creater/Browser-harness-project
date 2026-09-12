@@ -65,7 +65,6 @@ class OpenAICompatibleModelAdapter:
         base_url_env: str = "MODEL_BASE_URL",
         api_key_env: str = "MODEL_API_KEY",
         base_url: str | None = None,
-        api_key: str | None = None,
         temperature: float = 0.0,
         timeout_s: float = 120.0,
         max_tokens: int | None = None,
@@ -75,7 +74,7 @@ class OpenAICompatibleModelAdapter:
         self.timeout_s = timeout_s
         self.max_tokens = max_tokens
         resolved_base_url = base_url or os.environ.get(base_url_env, "")
-        resolved_api_key = api_key or os.environ.get(api_key_env, "")
+        resolved_api_key = os.environ.get(api_key_env, "")
         if not resolved_base_url:
             raise ModelApiError(
                 f"base URL is empty: set config model.base_url or env {base_url_env}"

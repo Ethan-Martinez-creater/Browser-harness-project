@@ -58,6 +58,7 @@ def run(
     env = BrowserGymAdapter(
         observation_char_limit=cfg.observation_char_limit,
         save_screenshots=cfg.save_screenshots,
+        bootstrap_action=cfg.bootstrap_action,
     )
     runner = EpisodeRunner(
         agent=agent,

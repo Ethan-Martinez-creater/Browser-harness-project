@@ -104,7 +104,8 @@ class StepRecord(BaseModel):
     step_index: int
     timestamp: str = Field(default_factory=now_utc_iso)
     url: str | None = None
-    observation_ref: str | None = None
+    observation_ref: str | None = None  # pre-action observation (decision input)
+    next_observation_ref: str | None = None  # post-action observation (result)
     prompt_ref: str | None = None
     model_response_ref: str | None = None
     action: str | None = None

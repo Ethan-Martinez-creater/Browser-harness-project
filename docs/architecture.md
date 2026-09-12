@@ -67,6 +67,15 @@ Enforced invariants:
 4. **Observation normalization.** Raw BrowserGym observations (objects) are
    converted to text by `ObservationNormalizer` with deterministic
    truncation; no LLM-based compression in Phase 0.
+5. **Single-source action contract.** The environment adapter builds one
+   BrowserGym `HighLevelActionSet` and installs it as the env's action
+   mapping; the prompt-facing `ActionContract` is generated from that same
+   instance (`env/action_contract.py`), so every action advertised to the
+   agent is guaranteed parseable and executable by the environment
+   (`ADR-002`).
+6. **Step trace semantics.** `obs_N` is the pre-action decision input and
+   matches `prompt_N`; `next_obs_N` is the post-action result, and
+   `obs_(N+1) ≡ next_obs_N` (`trace_schema.md`).
 
 ## Data flow per step
 

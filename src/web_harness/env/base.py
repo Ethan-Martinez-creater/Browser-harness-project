@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from web_harness.core.models import EnvironmentStep, Observation, TaskSpec
+from web_harness.env.action_contract import ActionContract
 
 
 class EnvironmentAdapter(Protocol):
@@ -19,3 +20,7 @@ class EnvironmentAdapter(Protocol):
     def step(self, action: str) -> EnvironmentStep: ...
 
     def close(self) -> None: ...
+
+    def action_contract(self) -> ActionContract:
+        """The actions this environment actually accepts (prompt source of truth)."""
+        ...

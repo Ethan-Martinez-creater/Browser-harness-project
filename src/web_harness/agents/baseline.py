@@ -15,6 +15,7 @@ from web_harness.core.models import (
     StepRecord,
     TaskSpec,
 )
+from web_harness.env.action_contract import ActionContract
 from web_harness.models.base import ModelAdapter, select_history
 
 
@@ -35,10 +36,14 @@ class BaselineAgent:
         task: TaskSpec,
         observation: Observation,
         history: list[StepRecord],
+        action_contract: ActionContract,
     ) -> tuple[AgentTurn, PromptBundle]:
         """Return the decision plus the exact prompt used (for tracing)."""
         prompt = self.prompt_builder.build(
-            task=task, observation=observation, history=history
+            task=task,
+            observation=observation,
+            history=history,
+            action_contract=action_contract,
         )
         model_output = self.model_adapter.generate_action(
             task=task,

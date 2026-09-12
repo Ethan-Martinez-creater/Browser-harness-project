@@ -3,6 +3,17 @@
 This is the ONLY module allowed to import BrowserGym/Gymnasium. Everything
 above the environment layer works with `TaskSpec`, `Observation` and
 `EnvironmentStep` exclusively.
+
+Action contract: the adapter builds ONE HighLevelActionSet and installs its
+`to_python_code` as the environment's action mapping; the prompt-facing
+ActionContract is generated from that same instance, so every action shown to
+the agent is guaranteed to be accepted by this environment.
+
+Bootstrap action: MiniWoB pages render their task HTML after DOM-load, so the
+first observation right after reset() can have an empty accessibility tree.
+If a bootstrap action is configured, the adapter executes it once after
+reset(); it is verified to produce no reward and no termination, exposed in
+provenance, and must stay disabled for other benchmarks (see ADR-004).
 """
 
 from __future__ import annotations
@@ -12,6 +23,10 @@ from pathlib import Path
 
 from web_harness.core.errors import EnvironmentInitError
 from web_harness.core.models import EnvironmentStep, Observation, TaskSpec
+from web_harness.env.action_contract import (
+    ActionContract,
+    action_contract_from_browsergym,
+)
 from web_harness.env.observation import ObservationNormalizer
 
 DEFAULT_MINIWOB_LOCAL_PATH = (
@@ -55,7 +70,8 @@ class BrowserGymAdapter:
         save_screenshots: bool = False,
         artifact_dir: Path | None = None,
         miniwob_url: str | None = None,
-        wait_ms_after_reset: int = 0,
+        bootstrap_action: str | None = None,
+        multiaction: bool = False,
     ):
         self._normalizer = ObservationNormalizer(
             observation_char_limit=observation_char_limit
@@ -64,10 +80,33 @@ class BrowserGymAdapter:
         self._save_screenshots = save_screenshots
         self._artifact_dir = artifact_dir
         self._miniwob_url = miniwob_url
-        self._wait_ms_after_reset = wait_ms_after_reset
+        self._bootstrap_action = bootstrap_action
         self._env = None
         self._last_observation: Observation | None = None
         self._closed = False
+        self._contract: ActionContract | None = None
+        self._action_set = self._build_action_set(multiaction=multiaction)
+        # provenance: set during reset() when a bootstrap action was executed
+        self.bootstrap_action_executed: str | None = None
+
+    @staticmethod
+    def _build_action_set(*, multiaction: bool):
+        """Build the env's action set.
+
+        One instance serves both execution (env action_mapping) and the prompt
+        contract. `check`/`uncheck` are valid BrowserGym actions but are
+        excluded from the upstream default bid subset; they are re-added as
+        custom actions so the contract can expose them.
+        """
+        from browsergym.core.action.functions import check, uncheck
+        from browsergym.core.action.highlevel import HighLevelActionSet
+
+        return HighLevelActionSet(
+            subsets=["bid", "tab", "custom"],
+            custom_actions=[check, uncheck],
+            multiaction=multiaction,
+            strict=False,
+        )
 
     # -- helpers -----------------------------------------------------------
 
@@ -75,6 +114,13 @@ class BrowserGymAdapter:
     def gym_task_id(task: TaskSpec) -> str:
         """Map TaskSpec to a BrowserGym task id, e.g. browsergym/miniwob.click-test."""
         return f"browsergym/{task.benchmark}.{task.task_id}"
+
+    def action_contract(self) -> ActionContract:
+        if self._contract is None:
+            self._contract = action_contract_from_browsergym(
+                self._action_set, benchmark="browsergym"
+            )
+        return self._contract
 
     def _normalize(self, raw_obs: dict) -> Observation:
         # BrowserGym 0.14 exposes objects; text must be extracted explicitly.
@@ -136,22 +182,38 @@ class BrowserGymAdapter:
                 os.environ.setdefault("MINIWOB_URL", resolve_miniwob_url(self._miniwob_url))
             import browsergym.miniwob  # noqa: F401  (registers miniwob tasks)
 
-            env = gym.make(self.gym_task_id(task), headless=self._headless)
+            env = gym.make(
+                self.gym_task_id(task),
+                headless=self._headless,
+                action_mapping=self._action_set.to_python_code,
+            )
             self._env = env
             raw_obs, _info = env.reset(seed=task.seed)
-            # The first frame may render with an empty axtree; one internal
-            # noop refreshes the observation. This does not consume a model step.
-            raw_obs, _r, _t, _tr, _i = env.step("noop()")
-            if self._wait_ms_after_reset:
-                import time
+            obs = self._normalize(raw_obs)
 
-                time.sleep(self._wait_ms_after_reset / 1000.0)
+            # Explicit, verified, provenance-tracked bootstrap: MiniWoB task
+            # HTML renders after DOM-load, so the very first observation can
+            # have an empty axtree. The bootstrap action must not produce
+            # reward or termination, otherwise the task state is unusable.
+            if self._bootstrap_action:
+                raw_obs, reward, terminated, truncated, _info = self._env.step(
+                    self._bootstrap_action
+                )
+                if terminated or truncated or float(reward or 0.0) != 0.0:
+                    raise EnvironmentInitError(
+                        f"bootstrap action {self._bootstrap_action!r} changed the "
+                        f"task state (reward={reward}, terminated={terminated}, "
+                        f"truncated={truncated})"
+                    )
+                obs = self._normalize(raw_obs)
+                self.bootstrap_action_executed = self._bootstrap_action
         except Exception as exc:
             self.close()
+            if isinstance(exc, EnvironmentInitError):
+                raise
             raise EnvironmentInitError(
                 f"failed to init {self.gym_task_id(task)}: {exc}"
             ) from exc
-        obs = self._normalize(raw_obs)
         self._last_observation = obs
         return obs
 
