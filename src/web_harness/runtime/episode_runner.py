@@ -598,34 +598,48 @@ class EpisodeRunner:
                         episode_recovery_latency_s += recovery_result.latency_s
                         if recovery_result.terminal:
                             # the recovery noop itself ended the task: accept
-                            # the environment's real terminal semantics
+                            # the environment's real terminal semantics and
+                            # record exactly ONE local outcome for this
+                            # recovery (terminal outcomes never enter the
+                            # pending evaluation path — closure B1)
                             env_step = recovery_result.environment_step
                             final_reward = env_step.reward
-                            status = (
-                                RunStatus.SUCCESS
-                                if env_step.terminated and env_step.reward > 0
-                                else RunStatus.TRUNCATED if env_step.truncated
-                                else RunStatus.FAILED
-                            )
-                            error_type = ErrorType.TASK_TERMINATED
-                            if status == RunStatus.SUCCESS:
+                            if env_step.truncated:
+                                status = RunStatus.TRUNCATED
+                                error_type = ErrorType.TASK_TRUNCATED
+                                episode_recovery_failed_count += 1
+                            elif env_step.terminated and env_step.reward > 0:
+                                status = RunStatus.SUCCESS
+                                error_type = ErrorType.TASK_TERMINATED
+                                episode_recovery_success_count += 1
                                 episode_recovered = True
+                            else:
+                                status = RunStatus.FAILED
+                                error_type = ErrorType.TASK_TERMINATED
+                                episode_recovery_failed_count += 1
                             break
                         if recovery_result.error_type:
+                            # the recovery operation itself failed: exactly
+                            # one immediate failed outcome, and the recovery
+                            # must NOT also enter pending evaluation (the
+                            # three outcome paths are mutually exclusive —
+                            # closure B2)
                             episode_recovery_failed_count += 1
-                        # remember this recovery for local success evaluation
-                        state.reliability.pending_recovery_evaluations.append(
-                            {
-                                "signature": _priority_signature(
-                                    verification.signals
-                                ),
-                                "steps_observed": 0,
-                                "pre_fingerprint": fingerprint_of(observation),
-                            }
-                        )
-                        state.reliability.last_recovery_failure_signature = (
-                            _priority_signature(verification.signals)
-                        )
+                        else:
+                            # remember this recovery for local success
+                            # evaluation (only if it had no immediate outcome)
+                            state.reliability.pending_recovery_evaluations.append(
+                                {
+                                    "signature": _priority_signature(
+                                        verification.signals
+                                    ),
+                                    "steps_observed": 0,
+                                    "pre_fingerprint": fingerprint_of(observation),
+                                }
+                            )
+                            state.reliability.last_recovery_failure_signature = (
+                                _priority_signature(verification.signals)
+                            )
                         # the recovery observation drives the next decision
                         observation = recovery_result.observation
                         state.current_observation = observation

@@ -99,7 +99,9 @@ class RecoveryManager:
             )
 
         if directive.kind == RecoveryKind.WAIT_AND_REOBSERVE:
-            wait_ms = directive.wait_ms or 500
+            # wait_ms=0 is a legal configuration and must be executed as 0;
+            # only an unset directive falls back to the default (R1)
+            wait_ms = 500 if directive.wait_ms is None else directive.wait_ms
             action = f"noop(wait_ms={wait_ms})"
             env_step = env.step(action)
             latency = time.monotonic() - started

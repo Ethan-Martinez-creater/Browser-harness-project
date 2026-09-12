@@ -50,6 +50,16 @@ def signal(kind: FailureKind, sig: str, severity=FailureSeverity.ERROR):
     )
 
 
+def assert_recovery_outcome_invariant(result) -> None:
+    """Exactly one local outcome per recovery attempt (closure R3)."""
+    assert (
+        result.recovery_success_count
+        + result.recovery_failed_count
+        + result.recovery_unresolved_count
+        == result.recovery_count
+    )
+
+
 def make_env(script, **injection):
     return FaultInjectingEnvironmentAdapter(
         FakeEnvironment(reset_observation=RESET_OBS, script=script),
@@ -206,6 +216,7 @@ def test_c1_action_error_redecide_with_feedback(tmp_path):
     result = runner.run(TASK, run_id="c1")
 
     assert result.success
+    assert_recovery_outcome_invariant(result)
     assert result.recovery_count == 1
     # REDECIDE_WITH_FEEDBACK never touches the environment
     assert result.recovery_environment_actions == 0
@@ -250,6 +261,7 @@ def test_c1b_recovery_directive_reaches_prompt_not_normal_path(tmp_path):
     )
     result = runner.run(TASK, run_id="c1b")
     assert result.success
+    assert_recovery_outcome_invariant(result)
     assert len(prompts) == 2
     # first decision (no directive yet): normal path untouched
     assert "# Reliability recovery feedback" not in prompts[0]
@@ -272,6 +284,7 @@ def test_c2_empty_observation_wait_and_reobserve(tmp_path):
     result = runner.run(TASK, run_id="c2")
 
     assert result.success
+    assert_recovery_outcome_invariant(result)
     assert result.recovery_count == 1
     # exactly one harness-owned environment operation for the recovery
     assert result.recovery_environment_actions == 1
@@ -309,6 +322,7 @@ def test_c3_loop_blocked_repeated_action(tmp_path):
     result = runner.run(TASK, run_id="c3")
 
     assert result.success
+    assert_recovery_outcome_invariant(result)
     assert result.recovery_count == 1
     assert result.recovered_episode
     assert result.num_steps == 3
@@ -359,6 +373,7 @@ def test_c5_single_no_progress_continues(tmp_path):
     result = runner.run(TASK, run_id="c5")
 
     assert result.success
+    assert_recovery_outcome_invariant(result)
     assert result.recovery_count == 0
     assert result.recovery_success_count == 0
     assert result.recovery_failed_count == 0
@@ -378,6 +393,7 @@ def test_c6_task_failed_is_final_no_recovery(tmp_path):
     result = runner.run(TASK, run_id="c6")
 
     assert result.status == RunStatus.FAILED
+    assert_recovery_outcome_invariant(result)
     assert not result.success
     assert result.error_type == ErrorType.TASK_TERMINATED
     # environment terminal is final: zero recoveries, zero extra env actions
@@ -401,6 +417,7 @@ def test_c7_blocked_action_reselected_never_executed(tmp_path):
     result = runner.run(TASK, run_id="c7")
 
     assert result.success
+    assert_recovery_outcome_invariant(result)
     # one actual recovery (the action-error directive); re-selecting the
     # blocked action is a separate re-decision, not a new recovery (R3)
     assert result.recovery_count == 1
@@ -432,6 +449,7 @@ def test_c8_recovery_noop_termination_accepted(tmp_path):
 
     # the harness never overrides the environment's terminal semantics
     assert result.success
+    assert_recovery_outcome_invariant(result)
     assert result.final_reward == 1.0
     assert result.recovery_count == 1
     assert result.recovery_environment_actions == 1
@@ -459,12 +477,7 @@ def test_c12_pending_recovery_finalized_not_silently_lost(tmp_path):
     assert result.recovery_success_count == 0
     assert result.recovery_failed_count == 0
     assert result.recovery_unresolved_count == 1
-    assert (
-        result.recovery_success_count
-        + result.recovery_failed_count
-        + result.recovery_unresolved_count
-        == result.recovery_count
-    )
+    assert_recovery_outcome_invariant(result)
 
 
 # -- C13 / R1: WAIT recovery itself restores state -> outcome correct ----------
@@ -486,6 +499,7 @@ def test_c13_wait_recovery_fingerprint_reference(tmp_path):
     result = runner.run(TASK, run_id="c13")
 
     assert result.success
+    assert_recovery_outcome_invariant(result)
     assert result.recovery_count == 1
     assert result.recovery_environment_actions == 1
     # recovery-start fingerprint (invalid obs) != current fingerprint
@@ -499,6 +513,102 @@ def test_c13_wait_recovery_fingerprint_reference(tmp_path):
         + result.recovery_unresolved_count
         == result.recovery_count
     )
+
+
+# -- closure B1: recovery noop terminates WITHOUT success -> one failed outcome
+
+
+def test_c8b_terminal_failure_recovery_single_outcome(tmp_path):
+    env = make_env(
+        [{}, {"terminated": True, "reward": 0.0}],
+        empty_observation_on_steps={0},
+    )
+    runner = make_runner(tmp_path, env, ["click(bid='1')", "click(bid='2')"])
+    result = runner.run(TASK, run_id="c8b")
+
+    assert result.status == RunStatus.FAILED
+    assert result.final_reward == 0.0
+    assert result.recovery_count == 1
+    # exactly ONE failed outcome for the terminal recovery, never pending
+    assert result.recovery_failed_count == 1
+    assert result.recovery_success_count == 0
+    assert result.recovery_unresolved_count == 0
+    assert_recovery_outcome_invariant(result)
+    assert not result.recovered_episode
+
+
+# -- closure R2: recovery noop truncation -> TASK_TRUNCATED + one outcome ------
+
+
+def test_c8c_recovery_truncation_error_type(tmp_path):
+    env = make_env(
+        [{}, {"truncated": True}],
+        empty_observation_on_steps={0},
+    )
+    runner = make_runner(tmp_path, env, ["click(bid='1')", "click(bid='2')"])
+    result = runner.run(TASK, run_id="c8c")
+
+    assert result.status == RunStatus.TRUNCATED
+    assert result.error_type == ErrorType.TASK_TRUNCATED
+    assert result.recovery_count == 1
+    assert result.recovery_failed_count == 1
+    assert result.recovery_success_count == 0
+    assert result.recovery_unresolved_count == 0
+    assert_recovery_outcome_invariant(result)
+
+
+# -- closure B2: recovery operation error -> one outcome, never double-counted
+
+
+def test_c8d_recovery_action_error_single_outcome(tmp_path):
+    # the recovery noop itself fails (injected on wrapper step 1): one
+    # immediate failed outcome and NO pending evaluation for the same
+    # recovery, so a later clean step cannot count it a second time
+    env = make_env(
+        [{}, {}, {"reward": 1.0, "terminated": True, "observation": OBS_B}],
+        empty_observation_on_steps={0},
+        action_error_on_steps={1},
+    )
+    runner = make_runner(
+        tmp_path, env, ["click(bid='1')", "click(bid='2')"]
+    )
+    result = runner.run(TASK, run_id="c8d")
+
+    assert result.success
+    assert result.recovery_count == 1
+    assert result.recovery_failed_count == 1
+    assert result.recovery_success_count == 0
+    assert result.recovery_unresolved_count == 0
+    assert_recovery_outcome_invariant(result)
+    # the failed recovery observation still drove the next decision
+    assert result.recovery_environment_actions == 1
+
+
+# -- closure R1: wait_ms=0 is executed as 0, not silently upgraded to 500 ------
+
+
+def test_wait_ms_zero_executed_as_zero(tmp_path):
+    env = make_env(
+        [{}, {"reward": 1.0, "terminated": True, "observation": OBS_B}],
+        empty_observation_on_steps={0},
+    )
+    runner = EpisodeRunner(
+        agent=BaselineAgent(model_adapter=MockModelAdapter(["click(bid='1')",
+                                                             "click(bid='2')"])),
+        env=env,
+        trace_root=tmp_path,
+        verifier=DefaultStepVerifier(),
+        failure_policy=FailurePolicyEngine(wait_ms=0),
+        recovery_budget=ReliabilityBudget(max_recoveries_per_episode=3),
+    )
+    result = runner.run(TASK, run_id="c-wait0")
+
+    assert result.success
+    assert result.recovery_count == 1
+    assert result.recovery_environment_actions == 1
+    assert "noop(wait_ms=0)" in env.wrapped.executed_actions
+    assert "noop(wait_ms=500)" not in env.wrapped.executed_actions
+    assert_recovery_outcome_invariant(result)
 
 
 # -- R4: TASK_FAILED short-circuit produces a deterministic policy event -------
@@ -581,6 +691,7 @@ def test_regression_recovery_disabled_phase1b_unchanged(tmp_path):
     result = runner.run(TASK, run_id="reg")
 
     assert result.success
+    assert_recovery_outcome_invariant(result)
     assert result.num_steps == 2
     assert result.recovery_count == 0
     assert result.recovery_success_count == 0

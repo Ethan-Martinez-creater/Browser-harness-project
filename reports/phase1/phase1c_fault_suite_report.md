@@ -15,6 +15,9 @@ These results are NOT mixed with natural MiniWoB success rates.
 | C6 task_failed is final | PASS | failed | 0 | 0 | TASK_TERMINATED |
 | C7 blocked action re-selected | PASS | success | 1 | 0 | - |
 | C8 recovery noop terminates the task | PASS | success | 1 | 1 | - |
+| C14 terminal recovery without success | PASS | failed | 1 | 0 | - |
+| C15 recovery noop truncation | PASS | truncated | 1 | 0 | TASK_TRUNCATED |
+| C16 recovery action error not double-counted | PASS | success | 1 | 1 | - |
 | C9 budget exhausted + clean PASS -> continue | PASS | success | 3 | 0 | - |
 | C10 budget exhausted + no_progress -> continue | PASS | success | 3 | 0 | - |
 | C11 budget exhausted + action_error -> abort | PASS | error | 3 | 0 | RECOVERY_FAILED |

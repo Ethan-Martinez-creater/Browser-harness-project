@@ -80,6 +80,16 @@ def event_outcomes(events, event_type: str) -> list[str]:
     ]
 
 
+def outcome_invariant(result) -> bool:
+    """Exactly one local outcome per recovery attempt (closure R3)."""
+    return (
+        result.recovery_success_count
+        + result.recovery_failed_count
+        + result.recovery_unresolved_count
+        == result.recovery_count
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", default="reports/phase1")
@@ -168,6 +178,7 @@ def main() -> int:
                 for k in ("wait_ms", "action_error", "reward",
                           "terminated", "truncated")
             ) if recovery_events else False,
+            "outcome_invariant": outcome_invariant(result),
         },
     }
     scenarios.append(data)
@@ -198,6 +209,7 @@ def main() -> int:
             "repeated_action_allowed_once_then_switch":
                 executed == ["click(bid='1')", "click(bid='1')", "click(bid='2')"],
         },
+            "outcome_invariant": outcome_invariant(result),
     }
     scenarios.append(data)
 
@@ -313,6 +325,7 @@ def main() -> int:
             in event_outcomes(events, "recovery"),
             "final_step_action": steps[-1].action == "click(bid='2')",
         },
+            "outcome_invariant": outcome_invariant(result),
     }
     scenarios.append(data)
 
@@ -339,6 +352,103 @@ def main() -> int:
             "one_recovery_env_action": result.recovery_environment_actions == 1,
             "one_agent_step": result.num_steps == 1,
             "recovered_episode": result.recovered_episode,
+            "terminal_success_outcome": result.recovery_success_count == 1,
+            "no_pending_no_failed": (
+                result.recovery_failed_count == 0
+                and result.recovery_unresolved_count == 0
+            ),
+            "outcome_invariant": outcome_invariant(result),
+        },
+    }
+    scenarios.append(data)
+
+    # C14: terminal recovery WITHOUT success -> exactly one failed outcome
+    result, executed, (events, steps) = run_recovery_episode(
+        name="C14", script=[{}, {"terminated": True, "reward": 0.0}],
+        actions=["click(bid='1')", "click(bid='2')"],
+        injection={"empty_observation_on_steps": {0}},
+        tmp_root=out_dir,
+    )
+    data = {
+        "scenario": "C14 terminal recovery without success",
+        "status": result.status.value,
+        "final_reward": result.final_reward,
+        "recovery_count": result.recovery_count,
+        "recovery_failed_count": result.recovery_failed_count,
+        "expected": "the recovery noop terminates with reward 0: episode "
+                    "FAILED with exactly one failed local outcome, never "
+                    "pending",
+        "assertions": {
+            "failed": result.status == "failed",
+            "reward_zero": result.final_reward == 0.0,
+            "one_recovery": result.recovery_count == 1,
+            "one_failed_outcome": result.recovery_failed_count == 1,
+            "no_success_no_unresolved": (
+                result.recovery_success_count == 0
+                and result.recovery_unresolved_count == 0
+            ),
+            "outcome_invariant": outcome_invariant(result),
+        },
+    }
+    scenarios.append(data)
+
+    # C15: recovery noop truncation -> TASK_TRUNCATED + one failed outcome
+    result, executed, (events, steps) = run_recovery_episode(
+        name="C15", script=[{}, {"truncated": True}],
+        actions=["click(bid='1')", "click(bid='2')"],
+        injection={"empty_observation_on_steps": {0}},
+        tmp_root=out_dir,
+    )
+    data = {
+        "scenario": "C15 recovery noop truncation",
+        "status": result.status.value,
+        "error_type": result.error_type.value if result.error_type else None,
+        "recovery_count": result.recovery_count,
+        "recovery_failed_count": result.recovery_failed_count,
+        "expected": "a recovery-owned truncation is reported as "
+                    "TASK_TRUNCATED (not TASK_TERMINATED) with exactly one "
+                    "failed local outcome",
+        "assertions": {
+            "truncated_status": result.status == "truncated",
+            "truncated_error_type":
+                result.error_type == ErrorType.TASK_TRUNCATED,
+            "one_recovery": result.recovery_count == 1,
+            "one_failed_outcome": result.recovery_failed_count == 1,
+            "outcome_invariant": outcome_invariant(result),
+        },
+    }
+    scenarios.append(data)
+
+    # C16: recovery operation error -> one outcome, never double-counted
+    result, executed, (events, steps) = run_recovery_episode(
+        name="C16", script=[{}, {},
+                            {"reward": 1.0, "terminated": True,
+                             "observation": OBS_B}],
+        actions=["click(bid='1')", "click(bid='2')"],
+        injection={"empty_observation_on_steps": {0},
+                   "action_error_on_steps": {1}},
+        tmp_root=out_dir,
+    )
+    data = {
+        "scenario": "C16 recovery action error not double-counted",
+        "status": result.status.value,
+        "recovery_count": result.recovery_count,
+        "recovery_failed_count": result.recovery_failed_count,
+        "recovery_environment_actions": result.recovery_environment_actions,
+        "expected": "the recovery noop itself errors: one immediate failed "
+                    "outcome, no pending evaluation for the same recovery, "
+                    "and the episode still completes",
+        "assertions": {
+            "success": result.success,
+            "one_recovery": result.recovery_count == 1,
+            "one_failed_outcome": result.recovery_failed_count == 1,
+            "no_success_no_unresolved": (
+                result.recovery_success_count == 0
+                and result.recovery_unresolved_count == 0
+            ),
+            "recovery_env_action_counted":
+                result.recovery_environment_actions == 1,
+            "outcome_invariant": outcome_invariant(result),
         },
     }
     scenarios.append(data)
@@ -495,6 +605,7 @@ def main() -> int:
                 and result.recovery_unresolved_count == 0
             ),
         },
+            "outcome_invariant": outcome_invariant(result),
     }
     scenarios.append(data)
 

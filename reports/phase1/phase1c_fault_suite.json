@@ -62,7 +62,8 @@
         "noop_is_not_a_step": true,
         "step_actions_are_agent_actions": true,
         "recovery_observation_used": true,
-        "event_has_env_semantics": true
+        "event_has_env_semantics": true,
+        "outcome_invariant": true
       },
       "pass": true,
       "failed_assertions": []
@@ -87,6 +88,7 @@
         "block_event_recorded": true,
         "repeated_action_allowed_once_then_switch": true
       },
+      "outcome_invariant": true,
       "pass": true,
       "failed_assertions": []
     },
@@ -163,6 +165,7 @@
         "redecide_event_recorded": true,
         "final_step_action": true
       },
+      "outcome_invariant": true,
       "pass": true,
       "failed_assertions": []
     },
@@ -180,7 +183,63 @@
         "one_recovery": true,
         "one_recovery_env_action": true,
         "one_agent_step": true,
-        "recovered_episode": true
+        "recovered_episode": true,
+        "terminal_success_outcome": true,
+        "no_pending_no_failed": true,
+        "outcome_invariant": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "C14 terminal recovery without success",
+      "status": "failed",
+      "final_reward": 0.0,
+      "recovery_count": 1,
+      "recovery_failed_count": 1,
+      "expected": "the recovery noop terminates with reward 0: episode FAILED with exactly one failed local outcome, never pending",
+      "assertions": {
+        "failed": true,
+        "reward_zero": true,
+        "one_recovery": true,
+        "one_failed_outcome": true,
+        "no_success_no_unresolved": true,
+        "outcome_invariant": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "C15 recovery noop truncation",
+      "status": "truncated",
+      "error_type": "TASK_TRUNCATED",
+      "recovery_count": 1,
+      "recovery_failed_count": 1,
+      "expected": "a recovery-owned truncation is reported as TASK_TRUNCATED (not TASK_TERMINATED) with exactly one failed local outcome",
+      "assertions": {
+        "truncated_status": true,
+        "truncated_error_type": true,
+        "one_recovery": true,
+        "one_failed_outcome": true,
+        "outcome_invariant": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "C16 recovery action error not double-counted",
+      "status": "success",
+      "recovery_count": 1,
+      "recovery_failed_count": 1,
+      "recovery_environment_actions": 1,
+      "expected": "the recovery noop itself errors: one immediate failed outcome, no pending evaluation for the same recovery, and the episode still completes",
+      "assertions": {
+        "success": true,
+        "one_recovery": true,
+        "one_failed_outcome": true,
+        "no_success_no_unresolved": true,
+        "recovery_env_action_counted": true,
+        "outcome_invariant": true
       },
       "pass": true,
       "failed_assertions": []
@@ -276,6 +335,7 @@
         "recovery_success_counted": true,
         "no_failed_no_unresolved": true
       },
+      "outcome_invariant": true,
       "pass": true,
       "failed_assertions": []
     }
