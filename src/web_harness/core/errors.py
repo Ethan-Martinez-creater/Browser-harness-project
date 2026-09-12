@@ -29,6 +29,8 @@ class ErrorType(StrEnum):
     CHECKPOINT_ERROR = "CHECKPOINT_ERROR"
     POLICY_BLOCKED = "POLICY_BLOCKED"
     HUMAN_REJECTED = "HUMAN_REJECTED"
+    # Phase 1B
+    RETRY_EXHAUSTED = "RETRY_EXHAUSTED"
 
 
 class HarnessError(Exception):
@@ -51,11 +53,29 @@ class ModelApiError(HarnessError):
 
 
 class ModelOutputParseError(HarnessError):
+    """Model output could not be parsed into an ActionDecision.
+
+    The failed call's usage is carried on the exception so the harness can
+    account for tokens that were already spent (parse failures are never
+    recorded as zero-cost calls).
+    """
+
     error_type = ErrorType.MODEL_OUTPUT_PARSE_ERROR
 
-    def __init__(self, message: str, *, raw_text: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_text: str | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        model_name: str | None = None,
+    ):
         super().__init__(message)
         self.raw_text = raw_text
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.model_name = model_name
 
 
 class EnvironmentInitError(HarnessError):

@@ -119,6 +119,16 @@ class StepRecord(BaseModel):
     model_name: str | None = None
     short_reason: str | None = None
     error_type: ErrorType | None = None
+    # Phase 1B: retries within this decision cycle (token fields are totals
+    # over ALL model attempts of the step)
+    attempts: int = 1
+    retry_count: int = 0
+    retry_input_tokens: int = 0
+    retry_output_tokens: int = 0
+    retry_latency_s: float = 0.0
+    retry_success: bool = False
+    retry_exhausted: bool = False
+    budget_exhausted: bool = False
     # Phase 1A verification summary (details live in events.jsonl)
     verification_status: str | None = None
     failure_kinds: list[str] = Field(default_factory=list)
@@ -148,6 +158,14 @@ class RunResult(BaseModel):
     verifications_with_signal: int = 0
     failure_signal_count: int = 0
     failure_kind_counts: dict[str, int] = Field(default_factory=dict)
+    # Phase 1B retry accounting (totals over the whole episode)
+    retry_count: int = 0
+    retry_success_count: int = 0
+    retry_exhausted_count: int = 0
+    extra_model_calls: int = 0
+    retry_input_tokens: int = 0
+    retry_output_tokens: int = 0
+    retry_latency_s: float = 0.0
 
 
 def json_dump(model: BaseModel) -> str:

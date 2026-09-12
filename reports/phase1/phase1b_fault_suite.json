@@ -1,0 +1,183 @@
+{
+  "suite": "phase1b_fault_suite",
+  "scenarios": [
+    {
+      "scenario": "B1",
+      "status": "success",
+      "error_type": "TASK_TERMINATED",
+      "retry_count": 1,
+      "extra_model_calls": 1,
+      "env_steps": 1,
+      "steps": 1,
+      "retry_events": [
+        {
+          "attempt_index": 1,
+          "outcome": "retry"
+        },
+        {
+          "attempt_index": 1,
+          "outcome": "retry_succeeded"
+        }
+      ],
+      "input_tokens": 0,
+      "retry_input_tokens": 0,
+      "expected": "retry_count=1, 1 env action, episode success",
+      "assertions": {
+        "retry_count_is_1": true,
+        "success": true,
+        "one_env_action": true,
+        "one_step_record": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "B2",
+      "status": "success",
+      "error_type": "TASK_TERMINATED",
+      "retry_count": 2,
+      "extra_model_calls": 2,
+      "env_steps": 1,
+      "steps": 1,
+      "retry_events": [
+        {
+          "attempt_index": 1,
+          "outcome": "retry"
+        },
+        {
+          "attempt_index": 2,
+          "outcome": "retry"
+        },
+        {
+          "attempt_index": 2,
+          "outcome": "retry_succeeded"
+        }
+      ],
+      "input_tokens": 0,
+      "retry_input_tokens": 0,
+      "expected": "retry_count=2, episode success",
+      "assertions": {
+        "retry_count_is_2": true,
+        "success": true,
+        "one_env_action": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "B3",
+      "status": "error",
+      "error_type": "RETRY_EXHAUSTED",
+      "retry_count": 2,
+      "extra_model_calls": 2,
+      "env_steps": 0,
+      "steps": 1,
+      "retry_events": [
+        {
+          "attempt_index": 1,
+          "outcome": "retry"
+        },
+        {
+          "attempt_index": 2,
+          "outcome": "retry"
+        },
+        {
+          "attempt_index": 2,
+          "outcome": "exhausted"
+        }
+      ],
+      "input_tokens": 0,
+      "retry_input_tokens": 0,
+      "expected": "retry exhausted, zero env actions, controlled termination",
+      "assertions": {
+        "retry_exhausted": true,
+        "zero_env_actions": true,
+        "controlled_stop": true,
+        "exhausted_event_recorded": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "B4",
+      "status": "success",
+      "error_type": "TASK_TERMINATED",
+      "retry_count": 1,
+      "extra_model_calls": 1,
+      "env_steps": 1,
+      "steps": 1,
+      "retry_events": [
+        {
+          "attempt_index": 1,
+          "outcome": "retry"
+        },
+        {
+          "attempt_index": 1,
+          "outcome": "retry_succeeded"
+        }
+      ],
+      "input_tokens": 111,
+      "retry_input_tokens": 0,
+      "expected": "one format repair retry, tokens of failed attempt retained",
+      "assertions": {
+        "retry_count_is_1": true,
+        "success": true,
+        "one_env_action": true,
+        "failed_attempt_tokens_retained": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "B5",
+      "status": "error",
+      "error_type": "MODEL_API_ERROR",
+      "retry_count": 0,
+      "extra_model_calls": 0,
+      "env_steps": 0,
+      "steps": 1,
+      "retry_events": [],
+      "input_tokens": 0,
+      "retry_input_tokens": 0,
+      "expected": "no retry, episode ends, no retry events",
+      "assertions": {
+        "no_retry": true,
+        "no_retry_events": true,
+        "controlled_stop": true,
+        "zero_env_actions": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "B6",
+      "status": "error",
+      "error_type": "BUDGET_EXCEEDED",
+      "retry_count": 1,
+      "extra_model_calls": 1,
+      "env_steps": 0,
+      "steps": 1,
+      "retry_events": [
+        {
+          "attempt_index": 1,
+          "outcome": "retry"
+        },
+        {
+          "attempt_index": 1,
+          "outcome": "exhausted"
+        }
+      ],
+      "input_tokens": 0,
+      "retry_input_tokens": 0,
+      "expected": "budget exhausted after 1 extra call, controlled stop",
+      "assertions": {
+        "budget_respected": true,
+        "budget_exceeded_error": true,
+        "zero_env_actions": true
+      },
+      "pass": true,
+      "failed_assertions": []
+    }
+  ],
+  "all_pass": true
+}

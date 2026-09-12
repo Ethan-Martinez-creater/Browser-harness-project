@@ -123,11 +123,22 @@ class OpenAICompatibleModelAdapter:
         except (AttributeError, IndexError) as exc:
             raise ModelApiError("model API returned an unexpected response shape") from exc
 
-        decision = parse_structured_action(raw_text)
-
         usage = getattr(response, "usage", None)
         input_tokens = getattr(usage, "prompt_tokens", None) if usage else None
         output_tokens = getattr(usage, "completion_tokens", None) if usage else None
+
+        try:
+            decision = parse_structured_action(raw_text)
+        except ModelOutputParseError as exc:
+            # the failed call's tokens are already spent: attach usage so the
+            # harness never records a parse failure as a zero-cost call
+            raise ModelOutputParseError(
+                exc.message,
+                raw_text=exc.raw_text,
+                input_tokens=int(input_tokens) if input_tokens is not None else None,
+                output_tokens=int(output_tokens) if output_tokens is not None else None,
+                model_name=self.model,
+            ) from exc
 
         return ModelOutput(
             decision=decision,

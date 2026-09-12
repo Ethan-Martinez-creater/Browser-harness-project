@@ -47,6 +47,7 @@ PROFILES = {
             "It is not a model-capability conclusion.",
         ],
         "reliability": False,
+        "retry": False,
     },
     "phase1a": {
         "title": "# Phase 1A Verification (Shadow Mode) Report",
@@ -59,6 +60,19 @@ PROFILES = {
             "control flow.",
         ],
         "reliability": True,
+        "retry": False,
+    },
+    "phase1b": {
+        "title": "# Phase 1B Controlled Retry Report",
+        "scope": [
+            "> **Scope warning**: this is the Phase 1B engineering smoke run.",
+            "It validates controlled model-side retry (API retry with fixed",
+            "backoff, one parse-repair retry, budget limits) on the natural",
+            "MiniWoB workload. It is not a model-capability conclusion, and",
+            "browser actions are never retried.",
+        ],
+        "reliability": True,
+        "retry": True,
     },
 }
 
@@ -105,10 +119,48 @@ def render_reliability_metrics(summary: dict) -> list[str]:
     lines.append(
         "Shadow mode guarantees: verification_count == total agent steps "
         "(one verification per step), zero extra model calls, zero extra "
-        "environment actions. Detection only — retry, recovery and replanning "
+        "environment actions. Detection only — recovery and replanning "
         "do not exist in this phase."
     )
     lines.append("")
+    return lines
+
+
+def render_retry_metrics(summary: dict) -> list[str]:
+    agg = summary["aggregate"]
+    config = summary.get("config", {})
+    retry_cfg = ((config.get("reliability") or {}).get("retry")) or {}
+    api_cfg = retry_cfg.get("model_api") or {}
+    output_cfg = retry_cfg.get("model_output") or {}
+    budget_cfg = (config.get("reliability") or {}).get("budget") or {}
+    lines = [
+        "## Retry layer metrics (Phase 1B)",
+        "",
+        f"- retry enabled: {retry_cfg.get('enabled', False)}",
+        f"- model_api.max_retries: {api_cfg.get('max_retries', 2)} "
+        f"(1 initial attempt + N retries), backoff_ms={api_cfg.get('backoff_ms', [500, 1000])}",
+        f"- model_output.max_retries (format repair): {output_cfg.get('max_retries', 1)}",
+        f"- budget.max_extra_model_calls_per_episode: "
+        f"{budget_cfg.get('max_extra_model_calls_per_episode', 6)}",
+        "",
+        "| metric | value |",
+        "|---|---:|",
+        f"| total_retry_count | {agg.get('total_retry_count', 0)} |",
+        f"| episodes_with_retry | {agg.get('episodes_with_retry', 0)} |",
+        f"| retry_success_count | {agg.get('retry_success_count', 0)} |",
+        f"| retry_exhausted_count | {agg.get('retry_exhausted_count', 0)} |",
+        f"| retry_success_rate | {fmt_num(agg.get('retry_success_rate', 0.0))} |",
+        f"| total_extra_model_calls | {agg.get('total_extra_model_calls', 0)} |",
+        f"| total_retry_input_tokens | {agg.get('total_retry_input_tokens', 0)} |",
+        f"| total_retry_output_tokens | {agg.get('total_retry_output_tokens', 0)} |",
+        f"| total_retry_latency_s | {fmt_num(agg.get('total_retry_latency_s', 0.0))} |",
+        "",
+        "Retry scope guarantees: only MODEL_API_ERROR and MODEL_OUTPUT_PARSE_ERROR",
+        "are retried; browser actions are never retried; retries never add an",
+        "Agent step (one Agent action = one StepRecord, retries live in",
+        "events.jsonl); tokens of failed attempts are included in episode totals.",
+        "",
+    ]
     return lines
 
 
@@ -181,6 +233,8 @@ def render(summary: dict, episodes: list[dict], profile: str) -> str:
     lines.append("")
     if p["reliability"]:
         lines.extend(render_reliability_metrics(summary))
+    if p.get("retry"):
+        lines.extend(render_retry_metrics(summary))
     lines.append(
         "`estimated_cost` is null by design: the harness never guesses prices "
         "without a reliable price table; token counts above are the "

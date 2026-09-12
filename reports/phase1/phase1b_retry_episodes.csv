@@ -1,0 +1,13 @@
+run_id,benchmark,task_id,seed,status,success,final_reward,steps,duration_s,input_tokens,output_tokens,action_error_count,error_type,verification_count,verifications_with_signal,failure_signal_count,retry_count,retry_success_count,retry_exhausted_count,extra_model_calls,retry_input_tokens,retry_output_tokens,retry_latency_s
+run-20260912T081903Z-50e0acbb,miniwob,click-test,0,success,True,1.0,1,15.0,1405,28,0,TASK_TERMINATED,1,0,0,0,0,0,0,0,0,0.0
+run-20260912T081919Z-da609372,miniwob,click-button,0,success,True,1.0,1,9.891,1449,26,0,TASK_TERMINATED,1,0,0,0,0,0,0,0,0,0.0
+run-20260912T081930Z-53d9f945,miniwob,enter-text,0,success,True,1.0,2,11.687,2866,116,0,TASK_TERMINATED,2,0,0,0,0,0,0,0,0,0.0
+run-20260912T081942Z-72c9c331,miniwob,choose-list,0,success,True,1.0,1,10.282,1498,41,0,TASK_TERMINATED,1,0,0,0,0,0,0,0,0,0.0
+run-20260912T081953Z-48a69b7d,miniwob,click-checkboxes,0,success,True,1.0,2,14.625,2989,74,0,TASK_TERMINATED,2,0,0,0,0,0,0,0,0,0.0
+run-20260912T082008Z-6233582b,miniwob,click-link,0,success,True,1.0,4,48.079,6076,6182,1,TASK_TERMINATED,4,3,3,0,0,0,0,0,0,0.0
+run-20260912T082057Z-259f9dbe,miniwob,login-user,0,success,True,1.0,3,16.25,4518,134,0,TASK_TERMINATED,3,0,0,0,0,0,0,0,0,0.0
+run-20260912T082115Z-933a802a,miniwob,read-table,0,success,True,1.0,2,22.968,3160,157,0,TASK_TERMINATED,2,0,0,0,0,0,0,0,0,0.0
+run-20260912T082139Z-9af76de3,miniwob,navigate-tree,0,success,True,1.0,1,9.593,1481,117,0,TASK_TERMINATED,1,0,0,0,0,0,0,0,0,0.0
+run-20260912T082149Z-dc79dac5,miniwob,use-autocomplete,0,success,True,1.0,3,22.0,4481,609,0,TASK_TERMINATED,3,0,0,0,0,0,0,0,0,0.0
+run-20260912T082213Z-c662f5c2,miniwob,choose-date-easy,0,success,True,1.0,4,21.609,7734,398,1,TASK_TERMINATED,4,1,1,0,0,0,0,0,0,0.0
+run-20260912T082235Z-9bc6f3a4,miniwob,order-food,0,success,True,1.0,3,201.203,5643,13001,0,TASK_TERMINATED,3,0,0,0,0,0,0,0,0,0.0

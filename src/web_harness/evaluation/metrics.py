@@ -30,6 +30,13 @@ def episode_metrics(result: RunResult) -> dict:
         "verification_count": result.verification_count,
         "verifications_with_signal": result.verifications_with_signal,
         "failure_signal_count": result.failure_signal_count,
+        "retry_count": result.retry_count,
+        "retry_success_count": result.retry_success_count,
+        "retry_exhausted_count": result.retry_exhausted_count,
+        "extra_model_calls": result.extra_model_calls,
+        "retry_input_tokens": result.retry_input_tokens,
+        "retry_output_tokens": result.retry_output_tokens,
+        "retry_latency_s": round(result.retry_latency_s, 3),
     }
 
 
@@ -74,4 +81,21 @@ def aggregate_metrics(results: list[RunResult]) -> dict:
         "failure_signal_count": total_signals,
         "episodes_with_failure_signal": sum(1 for c in signal_counts if c > 0),
         "failure_kind_counts": dict(sorted(kind_counts.items())),
+        # reliability (Phase 1B controlled retry)
+        "total_retry_count": sum(r.retry_count for r in results),
+        "episodes_with_retry": sum(1 for r in results if r.retry_count > 0),
+        "retry_success_count": sum(r.retry_success_count for r in results),
+        "retry_exhausted_count": sum(r.retry_exhausted_count for r in results),
+        "retry_success_rate": (
+            (lambda s, c: s / c if c else 0.0)(
+                sum(r.retry_success_count for r in results),
+                sum(r.retry_count for r in results),
+            )
+        ),
+        "total_extra_model_calls": sum(r.extra_model_calls for r in results),
+        "total_retry_input_tokens": sum(r.retry_input_tokens for r in results),
+        "total_retry_output_tokens": sum(r.retry_output_tokens for r in results),
+        "total_retry_latency_s": round(
+            sum(r.retry_latency_s for r in results), 3
+        ),
     }

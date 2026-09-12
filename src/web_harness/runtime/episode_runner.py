@@ -29,17 +29,13 @@ if TYPE_CHECKING:
     from web_harness.reliability.verifier import StepVerifier
 
 from web_harness.agents.base import Agent
-from web_harness.core.errors import (
-    ErrorType,
-    HarnessError,
-    ModelApiError,
-    ModelOutputParseError,
-)
+from web_harness.core.errors import ErrorType, HarnessError
 from web_harness.core.events import RuntimeEvent, RuntimeEventType, new_event_id
 from web_harness.core.ids import new_run_id, now_utc_iso
 from web_harness.core.models import RunResult, RunStatus, StepRecord, TaskSpec
 from web_harness.env.base import EnvironmentAdapter
 from web_harness.observability.trace import TraceRecorder
+from web_harness.runtime.decision_executor import DecisionExecutor
 from web_harness.runtime.state import RunState
 
 logger = logging.getLogger(__name__)
@@ -74,6 +70,7 @@ class EpisodeRunner:
         manifest_extra: dict | None = None,
         verifier: StepVerifier | None = None,
         verification_mode: str = "shadow",
+        decision_executor: DecisionExecutor | None = None,
     ):
         self.agent = agent
         self.env = env
@@ -87,6 +84,9 @@ class EpisodeRunner:
         # records, it never changes the control flow. None = fully off.
         self.verifier = verifier
         self.verification_mode = verification_mode
+        # Phase 1B: the executor wraps agent.decide with controlled model-side
+        # retries. Default executor has retry disabled → identical to Phase 0.
+        self.decision_executor = decision_executor or DecisionExecutor()
 
     # -- main entry ---------------------------------------------------------
 
@@ -156,43 +156,86 @@ class EpisodeRunner:
             # the environment is the single source of truth for the action space
             action_contract = self.env.action_contract()
 
+            # episode-level retry accounting (Phase 1B)
+            episode_retry_count = 0
+            episode_retry_success_count = 0
+            episode_retry_exhausted_count = 0
+            episode_extra_model_calls = 0
+            episode_retry_input_tokens = 0
+            episode_retry_output_tokens = 0
+            episode_retry_latency_s = 0.0
+
+            def emit_runtime_event(fields: dict) -> None:
+                recorder.record_event(
+                    RuntimeEvent(
+                        event_id=new_event_id(),
+                        run_id=run_id,
+                        timestamp=now_utc_iso(),
+                        event_type=RuntimeEventType(fields["event_type"]),
+                        step_index=fields.get("step_index"),
+                        attempt_index=fields.get("attempt_index"),
+                        component=fields.get("component", "decision_executor"),
+                        outcome=fields.get("outcome"),
+                        data=fields.get("data", {}),
+                    )
+                )
+
             # -- explicit harness loop ------------------------------------
             for step_idx in range(task.max_steps):
                 t0 = time.monotonic()
 
-                # decide (on the pre-action observation)
-                try:
-                    turn, prompt = self.agent.decide(
-                        task=task,
-                        observation=observation,
-                        history=state.steps,
-                        action_contract=action_contract,
-                    )
-                except ModelOutputParseError as exc:
-                    recorder.write_failed_model_output(step_idx, exc.raw_text)
+                # decide (on the pre-action observation); the executor wraps
+                # the model call with controlled retries for model-side
+                # failures only — it never performs environment actions
+                decision_result = self.decision_executor.execute(
+                    agent=self.agent,
+                    task=task,
+                    observation=observation,
+                    history=state.steps,
+                    action_contract=action_contract,
+                    reliability_state=state.reliability,
+                    event_sink=emit_runtime_event,
+                    step_index=step_idx,
+                )
+                episode_retry_count += decision_result.retry_count
+                episode_extra_model_calls += decision_result.retry_count
+                episode_retry_input_tokens += decision_result.retry_input_tokens
+                episode_retry_output_tokens += decision_result.retry_output_tokens
+                episode_retry_latency_s += decision_result.retry_latency_s
+
+                if not decision_result.success:
+                    # terminal model-side failure: zero environment actions
+                    mo_exc_input = decision_result.total_input_tokens
                     step = self._failed_decision_step(
-                        state, step_idx, observation, ErrorType.MODEL_OUTPUT_PARSE_ERROR, exc
+                        state,
+                        step_idx,
+                        observation,
+                        decision_result.terminal_error_type or ErrorType.UNKNOWN_ERROR,
+                        HarnessError(
+                            decision_result.terminal_error_message or "decision failed"
+                        ),
+                        attempts=decision_result.attempts,
+                        retry_count=decision_result.retry_count,
+                        input_tokens=mo_exc_input,
+                        output_tokens=decision_result.total_output_tokens,
+                        retry_input_tokens=decision_result.retry_input_tokens,
+                        retry_output_tokens=decision_result.retry_output_tokens,
+                        retry_latency_s=decision_result.retry_latency_s,
+                        retry_exhausted=decision_result.retry_exhausted,
+                        budget_exhausted=decision_result.budget_exhausted,
                     )
                     recorder.record_step(step, observation=observation)
                     state.steps.append(step)
-                    error_type, error_message = ErrorType.MODEL_OUTPUT_PARSE_ERROR, exc.message
+                    if decision_result.retry_exhausted or decision_result.budget_exhausted:
+                        episode_retry_exhausted_count += 1
+                    error_type = decision_result.terminal_error_type
+                    error_message = decision_result.terminal_error_message
                     break
-                except ModelApiError as exc:
-                    step = self._failed_decision_step(
-                        state, step_idx, observation, ErrorType.MODEL_API_ERROR, exc
-                    )
-                    recorder.record_step(step, observation=observation)
-                    state.steps.append(step)
-                    error_type, error_message = ErrorType.MODEL_API_ERROR, exc.message
-                    break
-                except HarnessError as exc:
-                    step = self._failed_decision_step(
-                        state, step_idx, observation, exc.error_type, exc
-                    )
-                    recorder.record_step(step, observation=observation)
-                    state.steps.append(step)
-                    error_type, error_message = exc.error_type, exc.message
-                    break
+
+                turn = decision_result.turn
+                prompt = decision_result.prompt
+                if decision_result.retry_success:
+                    episode_retry_success_count += 1
 
                 # act: any environment exception is normalized here so the
                 # episode can be traced and the model can react next step
@@ -240,8 +283,9 @@ class EpisodeRunner:
                     terminated=env_step.terminated,
                     truncated=env_step.truncated,
                     latency_ms=step_latency_ms,
-                    input_tokens=mo.input_tokens if mo else None,
-                    output_tokens=mo.output_tokens if mo else None,
+                    # token totals cover ALL model attempts of this step
+                    input_tokens=decision_result.total_input_tokens or None,
+                    output_tokens=decision_result.total_output_tokens or None,
                     model_name=mo.model_name if mo else None,
                     short_reason=turn.decision.short_reason,
                     error_type=(
@@ -249,6 +293,12 @@ class EpisodeRunner:
                         if env_step.action_error
                         else None
                     ),
+                    attempts=decision_result.attempts,
+                    retry_count=decision_result.retry_count,
+                    retry_input_tokens=decision_result.retry_input_tokens,
+                    retry_output_tokens=decision_result.retry_output_tokens,
+                    retry_latency_s=decision_result.retry_latency_s,
+                    retry_success=decision_result.retry_success,
                     verification_status=verification_summary,
                     failure_kinds=failure_kinds,
                 )
@@ -308,6 +358,13 @@ class EpisodeRunner:
             return self._finish(
                 recorder, state, status, error_type, error_message,
                 started, started_at, run_dir, final_reward=final_reward,
+                retry_count=episode_retry_count,
+                retry_success_count=episode_retry_success_count,
+                retry_exhausted_count=episode_retry_exhausted_count,
+                extra_model_calls=episode_extra_model_calls,
+                retry_input_tokens=episode_retry_input_tokens,
+                retry_output_tokens=episode_retry_output_tokens,
+                retry_latency_s=episode_retry_latency_s,
             )
         finally:
             # the environment must be closed on every path
@@ -322,6 +379,16 @@ class EpisodeRunner:
         observation,
         error_type: ErrorType,
         exc: HarnessError,
+        *,
+        attempts: int = 1,
+        retry_count: int = 0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        retry_input_tokens: int = 0,
+        retry_output_tokens: int = 0,
+        retry_latency_s: float = 0.0,
+        retry_exhausted: bool = False,
+        budget_exhausted: bool = False,
     ) -> StepRecord:
         return StepRecord(
             run_id=state.run_id,
@@ -329,6 +396,15 @@ class EpisodeRunner:
             url=observation.url,
             action=None,
             error_type=error_type,
+            attempts=attempts,
+            retry_count=retry_count,
+            input_tokens=input_tokens or None,
+            output_tokens=output_tokens or None,
+            retry_input_tokens=retry_input_tokens,
+            retry_output_tokens=retry_output_tokens,
+            retry_latency_s=retry_latency_s,
+            retry_exhausted=retry_exhausted,
+            budget_exhausted=budget_exhausted,
         )
 
     def _finish(
@@ -342,6 +418,13 @@ class EpisodeRunner:
         started_at: str,
         run_dir: Path,
         final_reward: float = 0.0,
+        retry_count: int = 0,
+        retry_success_count: int = 0,
+        retry_exhausted_count: int = 0,
+        extra_model_calls: int = 0,
+        retry_input_tokens: int = 0,
+        retry_output_tokens: int = 0,
+        retry_latency_s: float = 0.0,
     ) -> RunResult:
         state.status = status
         duration = time.monotonic() - started
@@ -375,6 +458,13 @@ class EpisodeRunner:
             ),
             failure_signal_count=state.reliability.total_failure_signals,
             failure_kind_counts=kind_counts,
+            retry_count=retry_count,
+            retry_success_count=retry_success_count,
+            retry_exhausted_count=retry_exhausted_count,
+            extra_model_calls=extra_model_calls,
+            retry_input_tokens=retry_input_tokens,
+            retry_output_tokens=retry_output_tokens,
+            retry_latency_s=retry_latency_s,
         )
         recorder.write_result(result)
         return result

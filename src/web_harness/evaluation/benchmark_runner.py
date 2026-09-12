@@ -193,6 +193,26 @@ def run_benchmark(
             loop_consecutive_threshold=int(loop_cfg.get("consecutive_threshold", 2)),
         )
 
+    # Phase 1B: controlled retry for model-side failures only; disabled by
+    # default (baseline configs never enable it).
+    retry_cfg = cfg.reliability.get("retry") or {}
+    decision_executor = None
+    if cfg.reliability_enabled and retry_cfg.get("enabled", False):
+        from web_harness.core.reliability import default_budget_from_config
+        from web_harness.reliability.retry import RetryPolicy
+        from web_harness.runtime.decision_executor import DecisionExecutor
+
+        api_cfg = retry_cfg.get("model_api") or {}
+        output_cfg = retry_cfg.get("model_output") or {}
+        decision_executor = DecisionExecutor(
+            retry_policy=RetryPolicy(
+                api_max_retries=int(api_cfg.get("max_retries", 2)),
+                api_backoff_ms=[int(ms) for ms in api_cfg.get("backoff_ms", [500, 1000])],
+                parse_max_retries=int(output_cfg.get("max_retries", 1)),
+            ),
+            budget=default_budget_from_config(cfg.reliability),
+        )
+
     for task_id in tasks:
         for seed in seeds:
             task = TaskSpec(
@@ -213,6 +233,7 @@ def run_benchmark(
                 manifest_extra={"config_hash": canonical_config_hash},
                 verifier=verifier,
                 verification_mode=cfg.verification_mode,
+                decision_executor=decision_executor,
             )
             logger.info("episode start: %s seed=%s", task.task_id, seed)
             result = runner.run(task, run_id=new_run_id())

@@ -67,7 +67,7 @@ Failure kinds:
 | NO_PROGRESS | 5 |
 | TASK_FAILED | 1 |
 
-Shadow mode guarantees: verification_count == total agent steps (one verification per step), zero extra model calls, zero extra environment actions. Detection only — retry, recovery and replanning do not exist in this phase.
+Shadow mode guarantees: verification_count == total agent steps (one verification per step), zero extra model calls, zero extra environment actions. Detection only — recovery and replanning do not exist in this phase.
 
 `estimated_cost` is null by design: the harness never guesses prices without a reliable price table; token counts above are the authoritative usage record.
 

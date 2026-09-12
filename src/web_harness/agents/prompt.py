@@ -22,6 +22,13 @@ must include the target element id directly in the call). Never split
 arguments into separate JSON fields, and never output a bare action name."""
 
 
+REPAIR_FEEDBACK = """\
+Previous response did not match the required JSON action format.
+
+Return exactly one valid JSON object using the current ActionContract.
+Do not add markdown fences or extra prose."""
+
+
 def summarize_history(history: list[StepRecord], max_steps: int) -> str:
     """Short deterministic digest of the last steps (no model output text)."""
     if max_steps <= 0 or not history:
@@ -49,6 +56,7 @@ class PromptBuilder:
         observation: Observation,
         history: list[StepRecord],
         action_contract: ActionContract,
+        repair_feedback: str | None = None,
     ) -> PromptBundle:
         system = (
             "You are a careful web automation agent. You complete the given "
@@ -73,4 +81,8 @@ class PromptBuilder:
             f"# Current page accessibility tree\n{view}",
             "Choose the next action now. Respond with the JSON object only.",
         ]
-        return PromptBundle(system=system, user="\n\n".join(user_parts))
+        user = "\n\n".join(user_parts)
+        if repair_feedback:
+            # minimal format-repair feedback only (no reflection, no replanning)
+            user += f"\n\n# Format correction\n{repair_feedback}"
+        return PromptBundle(system=system, user=user)
