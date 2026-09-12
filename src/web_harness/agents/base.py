@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from web_harness.core.reliability import RecoveryDirective
+    from web_harness.core.reliability import RecoveryDirective, RecoveryPlan
 
 from pydantic import BaseModel
 
@@ -37,11 +37,14 @@ class Agent(Protocol):
         action_contract: ActionContract,
         repair_feedback: str | None = None,
         recovery_directive: RecoveryDirective | None = None,
+        recovery_plan: RecoveryPlan | None = None,
     ) -> tuple[AgentTurn, PromptBundle]:
         """Return the decision plus the exact prompt used (for tracing).
 
         `repair_feedback` is set only by format-repair retries (Phase 1B).
         `recovery_directive` is set only by environment-side recovery
-        (Phase 1C); the two feedback channels are intentionally separate.
+        (Phase 1C). `recovery_plan` is set only while an exception-path
+        RecoveryPlan is active (Phase 1D). The three channels stay
+        intentionally separate.
         """
         ...

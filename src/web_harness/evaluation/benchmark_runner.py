@@ -226,6 +226,32 @@ def run_benchmark(
             block_steps=int(recovery_cfg.get("block_steps", 1)),
         )
 
+    # Phase 1D: deterministic escalation + bounded Replanner; disabled by
+    # default (Phase 1C behavior unchanged).
+    replan_cfg = cfg.reliability.get("replanning") or {}
+    replan_trigger_policy = None
+    replan_executor = None
+    if cfg.reliability_enabled and replan_cfg.get("enabled", False):
+        from web_harness.reliability.replan_policy import ReplanTriggerPolicy
+        from web_harness.reliability.replanner import ReplanExecutor
+        from web_harness.reliability.retry import RetryPolicy as _RetryPolicy
+
+        replan_trigger_policy = ReplanTriggerPolicy()
+        replan_model = build_model_adapter(cfg.model)
+        api_cfg = retry_cfg.get("model_api") or {}
+        output_cfg = retry_cfg.get("model_output") or {}
+        replan_executor = ReplanExecutor(
+            model_adapter=replan_model,
+            retry_policy=_RetryPolicy(
+                api_max_retries=int(api_cfg.get("max_retries", 2)),
+                api_backoff_ms=[
+                    int(ms) for ms in api_cfg.get("backoff_ms", [500, 1000])
+                ],
+                parse_max_retries=int(output_cfg.get("max_retries", 1)),
+            ),
+            budget=default_budget_from_config(cfg.reliability),
+        )
+
     for task_id in tasks:
         for seed in seeds:
             task = TaskSpec(
@@ -249,6 +275,8 @@ def run_benchmark(
                 decision_executor=decision_executor,
                 failure_policy=failure_policy,
                 recovery_budget=default_budget_from_config(cfg.reliability),
+                replan_trigger_policy=replan_trigger_policy,
+                replan_executor=replan_executor,
             )
             logger.info("episode start: %s seed=%s", task.task_id, seed)
             result = runner.run(task, run_id=new_run_id())

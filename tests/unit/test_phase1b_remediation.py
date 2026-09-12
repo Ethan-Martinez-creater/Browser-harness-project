@@ -148,7 +148,7 @@ class MinimalProtocolAgent:
         self.calls = 0
 
     def decide(self, *, task, observation, history, action_contract,
-               repair_feedback=None, recovery_directive=None):
+               repair_feedback=None, recovery_directive=None, recovery_plan=None):
         self.calls += 1
         decision = ActionDecision(action="click(bid='1')", short_reason="minimal")
         return (
@@ -182,7 +182,7 @@ def test_protocol_agent_receives_repair_feedback(tmp_path):
 
     class FaultyThenGood(MinimalProtocolAgent):
         def decide(self, *, task, observation, history, action_contract,
-                   repair_feedback=None, recovery_directive=None):
+                   repair_feedback=None, recovery_directive=None, recovery_plan=None):
             seen_feedback.append(repair_feedback)
             if self.calls == 0:
                 self.calls += 1
@@ -207,7 +207,7 @@ def test_parse_repair_feedback_reaches_protocol_agent():
 
     class FaultyParseAgent(MinimalProtocolAgent):
         def decide(self, *, task, observation, history, action_contract,
-                   repair_feedback=None, recovery_directive=None):
+                   repair_feedback=None, recovery_directive=None, recovery_plan=None):
             seen_feedback.append(repair_feedback)
             if self.calls == 0:
                 self.calls += 1

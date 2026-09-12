@@ -75,3 +75,19 @@ class MockModelAdapter:
             decision=ActionDecision(action=self.actions[idx], short_reason=reason),
             model_name="mock",
         )
+
+    def generate_structured(
+        self,
+        *,
+        prompt: PromptBundle,
+    ) -> ModelOutput:
+        """Structured generation for Phase 1D: returns the scripted text
+        (a RecoveryPlan JSON) verbatim, unparsed, in `decision.action`."""
+        self.call_count += 1
+        idx = min(self.call_count - 1, len(self.actions) - 1)
+        text = self.actions[idx]
+        return ModelOutput(
+            decision=ActionDecision(action=text),
+            model_name="mock",
+            raw_text=text,
+        )

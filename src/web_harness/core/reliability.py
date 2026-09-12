@@ -12,7 +12,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class FailureKind(StrEnum):
@@ -77,7 +77,13 @@ class RecoveryDirective(BaseModel):
 
 
 class RecoveryPlan(BaseModel):
-    """Data contract for a structured replan (produced in Phase 1D)."""
+    """Data contract for a structured replan (produced in Phase 1D).
+
+    A RecoveryPlan is CONTEXT for the next agent decisions, never an action
+    plan: it is injected into the prompt and the reactive BaselineAgent keeps
+    producing one ActionDecision at a time. Hard limits: at most 4 strategy
+    steps and a finite horizon (horizon_steps is clamped to the configured
+    plan_horizon_steps by the runner)."""
 
     diagnosis: str
     immediate_subgoal: str
@@ -85,6 +91,13 @@ class RecoveryPlan(BaseModel):
     avoid_actions: list[str] = Field(default_factory=list)
     horizon_steps: int = 1
     created_at_step: int = 0
+
+    @field_validator("strategy_steps")
+    @classmethod
+    def _bounded_strategy_steps(cls, value: list[str]) -> list[str]:
+        if len(value) > 4:
+            raise ValueError("RecoveryPlan.strategy_steps is limited to 4")
+        return value
 
 
 class ReliabilityState(BaseModel):
@@ -105,6 +118,17 @@ class ReliabilityState(BaseModel):
     # Each entry: {"signature", "steps_observed", "pre_fingerprint"}.
     pending_recovery_evaluations: list[dict] = Field(default_factory=list)
     last_recovery_failure_signature: str | None = None
+    # Phase 1D: replan escalation state. consecutive_recovery_failures is
+    # driven by REAL recovery outcomes (FAILED +1, SUCCESS resets, UNRESOLVED
+    # neutral); last_failed_recovery_signature is the trigger signature of
+    # the most recent FAILED recovery (D1 matches loops against it).
+    consecutive_recovery_failures: int = 0
+    last_failed_recovery_signature: str | None = None
+    # active plan lifecycle: remaining_plan_steps counts down ONLY on real
+    # Agent StepRecords; replan outcome evaluation entry:
+    # {"signature", "steps_observed", "pre_fingerprint"}.
+    remaining_plan_steps: int | None = None
+    pending_replan_evaluation: dict | None = None
 
     def record_failure(self, signal: FailureSignal) -> None:
         self.failure_counts[signal.signature] = (
@@ -125,6 +149,10 @@ class ReliabilityBudget(BaseModel):
     max_recoveries_per_episode: int = 3
     max_replans_per_episode: int = 1
     max_extra_model_calls_per_episode: int = 6
+    # Phase 1D replanning parameters (trigger + plan shape)
+    recovery_failures_before_replan: int = 2
+    plan_horizon_steps: int = 3
+    recent_steps: int = 6
 
 
 def default_budget_from_config(reliability_cfg: dict[str, Any]) -> ReliabilityBudget:
@@ -147,4 +175,9 @@ def default_budget_from_config(reliability_cfg: dict[str, Any]) -> ReliabilityBu
         max_extra_model_calls_per_episode=int(
             budget_cfg.get("max_extra_model_calls_per_episode", 6)
         ),
+        recovery_failures_before_replan=int(
+            replan_cfg.get("recovery_failures_before_replan", 2)
+        ),
+        plan_horizon_steps=int(replan_cfg.get("plan_horizon_steps", 3)),
+        recent_steps=int(replan_cfg.get("recent_steps", 6)),
     )

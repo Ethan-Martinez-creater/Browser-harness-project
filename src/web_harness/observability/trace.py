@@ -122,6 +122,42 @@ class TraceRecorder:
 
     # -- steps -------------------------------------------------------------
 
+    def write_replan_plan(
+        self,
+        *,
+        replan_index: int,
+        plan,
+        trigger_reason: str | None,
+        failure_kind: str | None,
+        failure_signature: str | None,
+        recovery_failure_streak: int,
+        model_calls: int,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        latency_s: float,
+    ) -> str:
+        """Persist one created RecoveryPlan as artifacts/replan_XXX.json (1D).
+
+        The REPLAN event stores only the artifact ref + summary fields; the
+        full plan lives here. Returns the artifact reference."""
+        ref = f"artifacts/replan_{replan_index:03d}.json"
+        _write_json(
+            self.run_dir / ref,
+            {
+                "replan_index": replan_index,
+                "plan": plan.model_dump(mode="json") if plan else None,
+                "trigger_reason": trigger_reason,
+                "failure_kind": failure_kind,
+                "failure_signature": failure_signature,
+                "recovery_failure_streak": recovery_failure_streak,
+                "model_calls": model_calls,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "latency_s": latency_s,
+            },
+        )
+        return ref
+
     def record_step(
         self,
         step: StepRecord,

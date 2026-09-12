@@ -104,6 +104,9 @@ class HarnessConfig:
         if reliability_enabled:
             self._validate_retry_config(self.reliability.get("retry") or {})
             self._validate_recovery_config(self.reliability.get("recovery") or {})
+            self._validate_replanning_config(
+                self.reliability.get("replanning") or {}
+            )
             budget_cfg = self.reliability.get("budget") or {}
             if "max_extra_model_calls_per_episode" in budget_cfg:
                 value = budget_cfg["max_extra_model_calls_per_episode"]
@@ -183,6 +186,29 @@ class HarnessConfig:
         _int_field("max_recoveries_per_episode", 0)
         _int_field("wait_ms", 0)
         _int_field("block_steps", 1)
+
+    @classmethod
+    def _validate_replanning_config(cls, replan_cfg: dict[str, Any]) -> None:
+        """Fail-fast validation of the replanning section (Phase 1D)."""
+        if not replan_cfg:
+            return
+        enabled = replan_cfg.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ConfigError("reliability.replanning.enabled must be a boolean")
+
+        def _int_field(name: str, minimum: int) -> None:
+            if name not in replan_cfg:
+                return
+            value = replan_cfg[name]
+            if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+                raise ConfigError(
+                    f"reliability.replanning.{name} must be an int >= {minimum}"
+                )
+
+        _int_field("max_replans_per_episode", 0)
+        _int_field("recovery_failures_before_replan", 1)
+        _int_field("plan_horizon_steps", 1)
+        _int_field("recent_steps", 1)
 
     @classmethod
     def _validate_no_literal_secrets(cls, data: dict[str, Any]) -> None:

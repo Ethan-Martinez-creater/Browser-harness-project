@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from web_harness.reliability.policy import FailurePolicyEngine
+    from web_harness.reliability.replan_policy import ReplanTriggerPolicy
     from web_harness.reliability.verifier import StepVerifier
 
 from web_harness.agents.base import Agent
@@ -86,6 +87,8 @@ class EpisodeRunner:
         decision_executor: DecisionExecutor | None = None,
         failure_policy: FailurePolicyEngine | None = None,
         recovery_budget: ReliabilityBudget | None = None,
+        replan_trigger_policy: ReplanTriggerPolicy | None = None,
+        replan_executor=None,
     ):
         self.agent = agent
         self.env = env
@@ -106,6 +109,10 @@ class EpisodeRunner:
         # failures. None = recovery off (Phase 1B behavior unchanged).
         self.failure_policy = failure_policy
         self.recovery_budget = recovery_budget or ReliabilityBudget()
+        # Phase 1D: deterministic escalation policy + bounded Replanner.
+        # None = replanning off (Phase 1C behavior unchanged).
+        self.replan_trigger_policy = replan_trigger_policy
+        self.replan_executor = replan_executor
 
     # -- main entry ---------------------------------------------------------
 
@@ -194,6 +201,18 @@ class EpisodeRunner:
             # blocked-action re-selections are counted separately from
             # recoveries (R3): no directive is created, env.step is skipped
             episode_blocked_action_redecisions = 0
+            # Phase 1D replan accounting. Invariant: replan_success + failed
+            # + unresolved == replan_count. replan_model_calls counts real
+            # model calls per intervention (incl. retries) — replan_count
+            # counts interventions.
+            episode_replan_count = 0
+            episode_replan_success_count = 0
+            episode_replan_failed_count = 0
+            episode_replan_unresolved_count = 0
+            episode_replan_model_calls = 0
+            episode_replan_input_tokens = 0
+            episode_replan_output_tokens = 0
+            episode_replan_latency_s = 0.0
 
             def emit_runtime_event(fields: dict) -> None:
                 recorder.record_event(
@@ -209,6 +228,20 @@ class EpisodeRunner:
                         data=fields.get("data", {}),
                     )
                 )
+                if fields["event_type"] == "recovery":
+                    recovery_events_log.append(
+                        RuntimeEvent(
+                            event_id=new_event_id(),
+                            run_id=run_id,
+                            event_type=RuntimeEventType.RECOVERY,
+                            step_index=fields.get("step_index"),
+                            component=fields.get("component", "recovery_manager"),
+                            outcome=fields.get("outcome"),
+                            data=fields.get("data", {}),
+                        )
+                    )
+
+            recovery_events_log: list[RuntimeEvent] = []
 
             def attempt_sink(**kwargs) -> str | None:
                 # failed model attempts become trace artifacts (R4); ref is
@@ -269,11 +302,72 @@ class EpisodeRunner:
                     state_changed = current_fingerprint != pending["pre_fingerprint"]
                     if (state_changed or task_success) and not repeated:
                         episode_recovery_success_count += 1
+                        note_recovery_outcome(success=True, signature=signature)
                     elif pending["steps_observed"] >= 2 or repeated:
                         episode_recovery_failed_count += 1
+                        note_recovery_outcome(success=False, signature=signature)
                     else:
                         still_pending.append(pending)
                 state.reliability.pending_recovery_evaluations = still_pending
+
+            def note_recovery_outcome(
+                *, success: bool, signature: str | None
+            ) -> None:
+                """Recovery outcomes drive the replan streak (Phase 1D):
+                FAILED +1, SUCCESS resets, UNRESOLVED never touches it."""
+                if success:
+                    state.reliability.consecutive_recovery_failures = 0
+                    state.reliability.last_failed_recovery_signature = None
+                else:
+                    state.reliability.consecutive_recovery_failures += 1
+                    state.reliability.last_failed_recovery_signature = signature
+
+            def evaluate_pending_replan(
+                *,
+                current_fingerprint: str,
+                task_success: bool,
+                current_signatures: list[str],
+            ) -> None:
+                """Replan local outcome (deterministic, horizon-bounded):
+                leaving the replan-start fingerprint OR task success AND no
+                immediate repeat of the trigger signature -> SUCCESS; the
+                trigger signature reappearing -> FAILED (plan deactivated);
+                a horizon fully consumed without progress -> FAILED."""
+                nonlocal episode_replan_success_count
+                nonlocal episode_replan_failed_count
+                entry = state.reliability.pending_replan_evaluation
+                if entry is None:
+                    return
+                entry["steps_observed"] += 1
+                repeated = any(
+                    s.signature == entry["signature"] for s in current_signatures
+                )
+                state_changed = current_fingerprint != entry["pre_fingerprint"]
+                if (state_changed or task_success) and not repeated:
+                    episode_replan_success_count += 1
+                    state.reliability.pending_replan_evaluation = None
+                    # replan success resets the recovery failure streak
+                    state.reliability.consecutive_recovery_failures = 0
+                    state.reliability.last_failed_recovery_signature = None
+                elif repeated:
+                    episode_replan_failed_count += 1
+                    state.reliability.pending_replan_evaluation = None
+                    state.reliability.active_recovery_plan = None
+                    state.reliability.remaining_plan_steps = None
+
+            def consume_plan_horizon() -> None:
+                """Only a real Agent StepRecord consumes plan horizon."""
+                nonlocal episode_replan_failed_count
+                if state.reliability.active_recovery_plan is None:
+                    return
+                state.reliability.remaining_plan_steps -= 1
+                if state.reliability.remaining_plan_steps <= 0:
+                    # horizon exhausted: an unresolved outcome means FAILED
+                    if state.reliability.pending_replan_evaluation is not None:
+                        episode_replan_failed_count += 1
+                    state.reliability.active_recovery_plan = None
+                    state.reliability.remaining_plan_steps = None
+                    state.reliability.pending_replan_evaluation = None
 
             # -- explicit harness loop ------------------------------------
             for step_idx in range(task.max_steps):
@@ -298,6 +392,7 @@ class EpisodeRunner:
                         attempt_sink=attempt_sink,
                         step_index=step_idx,
                         recovery_directive=recovery_directive,
+                        recovery_plan=state.reliability.active_recovery_plan,
                     )
                     if not decision_result.success:
                         break
@@ -512,6 +607,20 @@ class EpisodeRunner:
                 # an active directive governs exactly one agent step
                 expire_recovery_directive()
 
+                # Phase 1D: evaluate the active plan outcome, then consume
+                # plan horizon (ONLY this real Agent StepRecord consumes it)
+                if self.replan_trigger_policy is not None:
+                    evaluate_pending_replan(
+                        current_fingerprint=fingerprint_of(env_step.observation),
+                        task_success=bool(
+                            env_step.terminated and env_step.reward > 0
+                        ),
+                        current_signatures=verification.signals
+                        if verification_summary is not None
+                        else [],
+                    )
+                    consume_plan_horizon()
+
                 # terminate? Environment terminal has the HIGHEST priority:
                 # it short-circuits the policy entirely. TASK_FAILED is
                 # therefore terminal-short-circuited by the runner before the
@@ -584,65 +693,224 @@ class EpisodeRunner:
                         error_message = policy_decision.reason
                         break
                     if policy_decision.action == PolicyAction.RECOVER:
-                        recovery_result = recovery_manager.recover(
-                            directive=policy_decision.directive,
-                            task=task,
-                            observation=observation,
-                            failed_action=turn.decision.action,
-                            env=self.env,
-                            reliability_state=state.reliability,
-                            step_index=step_idx,
-                        )
-                        episode_recovery_count += 1
-                        episode_recovery_env_actions += recovery_result.environment_actions
-                        episode_recovery_latency_s += recovery_result.latency_s
-                        if recovery_result.terminal:
-                            # the recovery noop itself ended the task: accept
-                            # the environment's real terminal semantics and
-                            # record exactly ONE local outcome for this
-                            # recovery (terminal outcomes never enter the
-                            # pending evaluation path — closure B1)
-                            env_step = recovery_result.environment_step
-                            final_reward = env_step.reward
-                            if env_step.truncated:
-                                status = RunStatus.TRUNCATED
-                                error_type = ErrorType.TASK_TRUNCATED
+                        # Phase 1D escalation check: deterministic, runs AFTER
+                        # the base policy and only on its RECOVER path. When
+                        # triggered, the Replanner produces a bounded
+                        # RecoveryPlan and the current recovery is replaced;
+                        # generation failure falls back to Phase 1C recovery.
+                        escalated = False
+                        if (
+                            self.replan_trigger_policy is not None
+                            and self.replan_executor is not None
+                        ):
+                            trigger_signature = _priority_signature(
+                                verification.signals
+                            )
+                            escalation = self.replan_trigger_policy.decide(
+                                base_action=policy_decision.action,
+                                failure_kind=policy_decision.failure_kind,
+                                failure_signature=trigger_signature,
+                                reliability_state=state.reliability,
+                                budget=self.recovery_budget,
+                            )
+                            if escalation.trigger:
+                                escalated = True
+                                episode_replan_count += 1
+                                # keep the state in sync: the trigger policy
+                                # reads replan_count from ReliabilityState
+                                state.reliability.replan_count += 1
+                                emit_runtime_event(
+                                    {
+                                        "event_type": "replan",
+                                        "step_index": step_idx,
+                                        "component": "replan_trigger_policy",
+                                        "outcome": "triggered",
+                                        "data": {
+                                            "reason": escalation.reason.value
+                                            if escalation.reason else None,
+                                            "failure_kind":
+                                            escalation.failure_kind.value
+                                            if escalation.failure_kind else None,
+                                            "failure_signature":
+                                            escalation.failure_signature,
+                                            "recovery_failure_streak":
+                                            state.reliability
+                                            .consecutive_recovery_failures,
+                                            "replan_count":
+                                            episode_replan_count,
+                                        },
+                                    }
+                                )
+                                gen = self.replan_executor.generate(
+                                    task=task,
+                                    observation=observation,
+                                    history=state.steps,
+                                    failure_signals=verification.signals,
+                                    recent_recovery_events=recovery_events_log[
+                                        -self.recovery_budget.recent_steps :
+                                    ],
+                                    action_contract=action_contract,
+                                    step_index=step_idx,
+                                    reliability_state=state.reliability,
+                                    event_sink=emit_runtime_event,
+                                    attempt_sink=attempt_sink,
+                                )
+                                episode_replan_model_calls += gen.attempts
+                                episode_replan_input_tokens += gen.input_tokens
+                                episode_replan_output_tokens += gen.output_tokens
+                                episode_replan_latency_s += gen.latency_s
+                                if gen.success:
+                                    state.reliability.active_recovery_plan = (
+                                        gen.plan
+                                    )
+                                    state.reliability.remaining_plan_steps = (
+                                        gen.plan.horizon_steps
+                                    )
+                                    state.reliability.pending_replan_evaluation = {
+                                        "signature": trigger_signature,
+                                        "steps_observed": 0,
+                                        "pre_fingerprint": fingerprint_of(
+                                            observation
+                                        ),
+                                    }
+                                    artifact_ref = recorder.write_replan_plan(
+                                        replan_index=episode_replan_count,
+                                        plan=gen.plan,
+                                        trigger_reason=escalation.reason.value
+                                        if escalation.reason else None,
+                                        failure_kind=(
+                                            escalation.failure_kind.value
+                                            if escalation.failure_kind else None
+                                        ),
+                                        failure_signature=trigger_signature,
+                                        recovery_failure_streak=state.reliability
+                                        .consecutive_recovery_failures,
+                                        model_calls=gen.attempts,
+                                        input_tokens=gen.input_tokens or None,
+                                        output_tokens=gen.output_tokens or None,
+                                        latency_s=gen.latency_s,
+                                    )
+                                    emit_runtime_event(
+                                        {
+                                            "event_type": "replan",
+                                            "step_index": step_idx,
+                                            "component": "replan_executor",
+                                            "outcome": "created",
+                                            "data": {
+                                                "artifact_ref": artifact_ref,
+                                                "horizon_steps":
+                                                gen.plan.horizon_steps,
+                                                "immediate_subgoal":
+                                                gen.plan.immediate_subgoal,
+                                                "model_calls": gen.attempts,
+                                                "input_tokens": gen.input_tokens,
+                                                "output_tokens":
+                                                gen.output_tokens,
+                                                "latency_s": round(
+                                                    gen.latency_s, 3
+                                                ),
+                                            },
+                                        }
+                                    )
+                                else:
+                                    episode_replan_failed_count += 1
+                                    emit_runtime_event(
+                                        {
+                                            "event_type": "replan",
+                                            "step_index": step_idx,
+                                            "component": "replan_executor",
+                                            "outcome": "generation_failed",
+                                            "data": {
+                                                "error_type":
+                                                gen.error_type.value
+                                                if gen.error_type else None,
+                                                "error_message":
+                                                gen.error_message,
+                                                "model_calls": gen.attempts,
+                                            },
+                                        }
+                                    )
+                                    # fallback to the Phase 1C recovery below
+                                    escalated = False
+                        if not escalated:
+                            recovery_result = recovery_manager.recover(
+                                directive=policy_decision.directive,
+                                task=task,
+                                observation=observation,
+                                failed_action=turn.decision.action,
+                                env=self.env,
+                                reliability_state=state.reliability,
+                                step_index=step_idx,
+                            )
+                            episode_recovery_count += 1
+                            episode_recovery_env_actions += recovery_result.environment_actions
+                            episode_recovery_latency_s += recovery_result.latency_s
+                            if recovery_result.terminal:
+                                # the recovery noop itself ended the task: accept
+                                # the environment's real terminal semantics and
+                                # record exactly ONE local outcome for this
+                                # recovery (terminal outcomes never enter the
+                                # pending evaluation path — closure B1)
+                                env_step = recovery_result.environment_step
+                                final_reward = env_step.reward
+                                if env_step.truncated:
+                                    status = RunStatus.TRUNCATED
+                                    error_type = ErrorType.TASK_TRUNCATED
+                                    episode_recovery_failed_count += 1
+                                    note_recovery_outcome(
+                                        success=False,
+                                        signature=_priority_signature(
+                                            verification.signals
+                                        ),
+                                    )
+                                elif env_step.terminated and env_step.reward > 0:
+                                    status = RunStatus.SUCCESS
+                                    error_type = ErrorType.TASK_TERMINATED
+                                    episode_recovery_success_count += 1
+                                    episode_recovered = True
+                                    note_recovery_outcome(success=True, signature=None)
+                                else:
+                                    status = RunStatus.FAILED
+                                    error_type = ErrorType.TASK_TERMINATED
+                                    episode_recovery_failed_count += 1
+                                    note_recovery_outcome(
+                                        success=False,
+                                        signature=_priority_signature(
+                                            verification.signals
+                                        ),
+                                    )
+                                break
+                            if recovery_result.error_type:
+                                # the recovery operation itself failed: exactly
+                                # one immediate failed outcome, and the recovery
+                                # must NOT also enter pending evaluation (the
+                                # three outcome paths are mutually exclusive —
+                                # closure B2)
                                 episode_recovery_failed_count += 1
-                            elif env_step.terminated and env_step.reward > 0:
-                                status = RunStatus.SUCCESS
-                                error_type = ErrorType.TASK_TERMINATED
-                                episode_recovery_success_count += 1
-                                episode_recovered = True
-                            else:
-                                status = RunStatus.FAILED
-                                error_type = ErrorType.TASK_TERMINATED
-                                episode_recovery_failed_count += 1
-                            break
-                        if recovery_result.error_type:
-                            # the recovery operation itself failed: exactly
-                            # one immediate failed outcome, and the recovery
-                            # must NOT also enter pending evaluation (the
-                            # three outcome paths are mutually exclusive —
-                            # closure B2)
-                            episode_recovery_failed_count += 1
-                        else:
-                            # remember this recovery for local success
-                            # evaluation (only if it had no immediate outcome)
-                            state.reliability.pending_recovery_evaluations.append(
-                                {
-                                    "signature": _priority_signature(
+                                note_recovery_outcome(
+                                    success=False,
+                                    signature=_priority_signature(
                                         verification.signals
                                     ),
-                                    "steps_observed": 0,
-                                    "pre_fingerprint": fingerprint_of(observation),
-                                }
-                            )
-                            state.reliability.last_recovery_failure_signature = (
-                                _priority_signature(verification.signals)
-                            )
-                        # the recovery observation drives the next decision
-                        observation = recovery_result.observation
-                        state.current_observation = observation
+                                )
+                            else:
+                                # remember this recovery for local success
+                                # evaluation (only if it had no immediate outcome)
+                                state.reliability.pending_recovery_evaluations.append(
+                                    {
+                                        "signature": _priority_signature(
+                                            verification.signals
+                                        ),
+                                        "steps_observed": 0,
+                                        "pre_fingerprint": fingerprint_of(observation),
+                                    }
+                                )
+                                state.reliability.last_recovery_failure_signature = (
+                                    _priority_signature(verification.signals)
+                                )
+                            # the recovery observation drives the next decision
+                            observation = recovery_result.observation
+                            state.current_observation = observation
             else:
                 status = RunStatus.MAX_STEPS_REACHED
                 error_type = ErrorType.MAX_STEPS_EXCEEDED
@@ -654,6 +922,14 @@ class EpisodeRunner:
                 state.reliability.pending_recovery_evaluations
             )
             state.reliability.pending_recovery_evaluations = []
+
+            # a plan outcome that the episode outlived is explicitly
+            # unresolved, never silently dropped (Phase 1D)
+            if state.reliability.pending_replan_evaluation is not None:
+                episode_replan_unresolved_count += 1
+            state.reliability.pending_replan_evaluation = None
+            state.reliability.active_recovery_plan = None
+            state.reliability.remaining_plan_steps = None
 
             if error_type is None and status == RunStatus.ERROR:
                 error_type = ErrorType.UNKNOWN_ERROR
@@ -677,6 +953,14 @@ class EpisodeRunner:
                 recovery_environment_actions=episode_recovery_env_actions,
                 recovery_latency_s=episode_recovery_latency_s,
                 blocked_action_redecisions=episode_blocked_action_redecisions,
+                replan_count=episode_replan_count,
+                replan_success_count=episode_replan_success_count,
+                replan_failed_count=episode_replan_failed_count,
+                replan_unresolved_count=episode_replan_unresolved_count,
+                replan_model_calls=episode_replan_model_calls,
+                replan_input_tokens=episode_replan_input_tokens,
+                replan_output_tokens=episode_replan_output_tokens,
+                replan_latency_s=episode_replan_latency_s,
             )
         finally:
             # the environment must be closed on every path
@@ -738,6 +1022,14 @@ class EpisodeRunner:
         recovery_environment_actions: int = 0,
         recovery_latency_s: float = 0.0,
         blocked_action_redecisions: int = 0,
+        replan_count: int = 0,
+        replan_success_count: int = 0,
+        replan_failed_count: int = 0,
+        replan_unresolved_count: int = 0,
+        replan_model_calls: int = 0,
+        replan_input_tokens: int = 0,
+        replan_output_tokens: int = 0,
+        replan_latency_s: float = 0.0,
         retry_count: int = 0,
         retry_cycle_count: int = 0,
         retry_success_count: int = 0,
@@ -795,6 +1087,14 @@ class EpisodeRunner:
             recovery_environment_actions=recovery_environment_actions,
             recovery_latency_s=recovery_latency_s,
             blocked_action_redecision_count=blocked_action_redecisions,
+            replan_count=replan_count,
+            replan_success_count=replan_success_count,
+            replan_failed_count=replan_failed_count,
+            replan_unresolved_count=replan_unresolved_count,
+            replan_model_calls=replan_model_calls,
+            replan_input_tokens=replan_input_tokens,
+            replan_output_tokens=replan_output_tokens,
+            replan_latency_s=replan_latency_s,
         )
         recorder.write_result(result)
         return result

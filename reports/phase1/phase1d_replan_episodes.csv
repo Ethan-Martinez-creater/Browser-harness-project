@@ -1,0 +1,13 @@
+run_id,benchmark,task_id,seed,status,success,final_reward,steps,duration_s,input_tokens,output_tokens,action_error_count,error_type,verification_count,verifications_with_signal,failure_signal_count,recovery_count,recovery_success_count,recovery_failed_count,recovery_unresolved_count,recovery_environment_actions,recovery_latency_s,blocked_action_redecision_count,retry_count,retry_cycle_count,retry_success_count,retry_exhausted_count,extra_model_calls,retry_input_tokens,retry_output_tokens,retry_latency_s
+run-20260912T161459Z-4ccc50db,miniwob,click-test,0,success,True,1.0,1,22.109,1405,30,0,TASK_TERMINATED,1,0,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0,0.0
+run-20260912T161523Z-597fff56,miniwob,click-button,0,success,True,1.0,1,8.609,1449,42,0,TASK_TERMINATED,1,0,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0,0.0
+run-20260912T161532Z-8fad2f65,miniwob,enter-text,0,success,True,1.0,2,21.218,2866,78,0,TASK_TERMINATED,2,0,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0,0.0
+run-20260912T161554Z-71cb5fb6,miniwob,choose-list,0,success,True,1.0,1,9.688,1498,42,0,TASK_TERMINATED,1,0,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0,0.0
+run-20260912T161604Z-cc49fad0,miniwob,click-checkboxes,0,success,True,1.0,2,17.5,2989,102,0,TASK_TERMINATED,2,0,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0,0.0
+run-20260912T161623Z-aa3bd7ef,miniwob,click-link,0,success,True,1.0,4,54.828,6142,6602,1,TASK_TERMINATED,4,3,3,1,1,0,0,0,0.016,0,0,0,0,0,0,0,0,0.0
+run-20260912T161719Z-4525e85a,miniwob,login-user,0,success,True,1.0,3,19.438,4518,171,0,TASK_TERMINATED,3,0,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0,0.0
+run-20260912T161740Z-5ea9cc38,miniwob,read-table,0,success,True,1.0,2,17.531,3160,111,0,TASK_TERMINATED,2,0,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0,0.0
+run-20260912T161759Z-9f8711e0,miniwob,navigate-tree,0,success,True,1.0,1,11.875,1481,111,0,TASK_TERMINATED,1,0,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0,0.0
+run-20260912T161811Z-1e2d7101,miniwob,use-autocomplete,0,success,True,1.0,3,28.735,4481,743,0,TASK_TERMINATED,3,0,0,0,0,0,0,0,0.0,0,0,0,0,0,0,0,0,0.0
+run-20260912T161841Z-10f31e3f,miniwob,choose-date-easy,0,success,True,1.0,4,78.14,7860,365,1,TASK_TERMINATED,4,1,1,1,1,0,0,0,0.016,0,0,0,0,0,0,0,0,0.0
+run-20260912T162001Z-01356cb5,miniwob,order-food,0,failed,False,0.0,3,429.156,5625,24623,0,TASK_TERMINATED,3,3,3,0,0,0,0,0,0.0,0,1,1,1,0,1,1867,12938,179.235

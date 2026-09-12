@@ -129,4 +129,42 @@ def aggregate_metrics(results: list[RunResult]) -> dict:
         "total_recovery_latency_s": round(
             sum(r.recovery_latency_s for r in results), 3
         ),
+        # reliability (Phase 1D replanning). replan_success_rate excludes
+        # unresolved from the denominator (shown separately); 0.0 when empty.
+        "total_replan_count": sum(r.replan_count for r in results),
+        "episodes_with_replan": sum(1 for r in results if r.replan_count > 0),
+        "replan_success_count": sum(r.replan_success_count for r in results),
+        "replan_failed_count": sum(r.replan_failed_count for r in results),
+        "replan_unresolved_count": sum(r.replan_unresolved_count for r in results),
+        "replan_success_rate": (
+            (lambda s, f: s / (s + f) if (s + f) else 0.0)(
+                sum(r.replan_success_count for r in results),
+                sum(r.replan_failed_count for r in results),
+            )
+        ),
+        "total_replan_model_calls": sum(r.replan_model_calls for r in results),
+        "total_replan_input_tokens": sum(r.replan_input_tokens for r in results),
+        "total_replan_output_tokens": sum(r.replan_output_tokens for r in results),
+        "total_replan_latency_s": round(
+            sum(r.replan_latency_s for r in results), 3
+        ),
+        # reliability total overhead (Phase 1 ablation): retry + recovery +
+        # replan extras; phase-specific metrics stay untouched
+        "reliability_extra_model_calls": (
+            sum(r.extra_model_calls for r in results)
+            + sum(r.replan_model_calls for r in results)
+        ),
+        "reliability_extra_tokens": (
+            sum(r.retry_input_tokens + r.retry_output_tokens for r in results)
+            + sum(
+                r.replan_input_tokens + r.replan_output_tokens for r in results
+            )
+        ),
+        "reliability_extra_latency_s": round(
+            sum(
+                r.retry_latency_s + r.recovery_latency_s + r.replan_latency_s
+                for r in results
+            ),
+            3,
+        ),
     }

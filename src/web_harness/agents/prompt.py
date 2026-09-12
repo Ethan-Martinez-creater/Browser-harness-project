@@ -9,7 +9,7 @@ digest, the available action schema and the required output format.
 from __future__ import annotations
 
 from web_harness.core.models import Observation, PromptBundle, StepRecord, TaskSpec
-from web_harness.core.reliability import RecoveryDirective
+from web_harness.core.reliability import RecoveryDirective, RecoveryPlan
 from web_harness.env.action_contract import ActionContract
 
 OUTPUT_FORMAT = """\
@@ -59,6 +59,7 @@ class PromptBuilder:
         action_contract: ActionContract,
         repair_feedback: str | None = None,
         recovery_directive: RecoveryDirective | None = None,
+        recovery_plan: RecoveryPlan | None = None,
     ) -> PromptBundle:
         system = (
             "You are a careful web automation agent. You complete the given "
@@ -98,4 +99,26 @@ class PromptBuilder:
                     + ", ".join(recovery_directive.blocked_actions)
                 )
             user += "\n\n".join(["\n".join(lines)])
+        if recovery_plan is not None:
+            # exception-path short-horizon strategy (Phase 1D): advisory
+            # context only — the reactive agent still picks its own action;
+            # an active recovery directive stays the hard constraint
+            plan_lines = ["# Recovery plan"]
+            if recovery_directive is not None:
+                plan_lines.append(
+                    "(An active recovery directive above is a hard "
+                    "constraint and takes precedence over this plan.)"
+                )
+            plan_lines.append(f"Immediate subgoal: {recovery_plan.immediate_subgoal}")
+            if recovery_plan.strategy_steps:
+                plan_lines.append("Strategy:")
+                plan_lines.extend(
+                    f"{i}. {step}"
+                    for i, step in enumerate(recovery_plan.strategy_steps, 1)
+                )
+            if recovery_plan.avoid_actions:
+                plan_lines.append(
+                    "Avoid (advisory): " + ", ".join(recovery_plan.avoid_actions)
+                )
+            user += "\n\n" + "\n".join(plan_lines)
         return PromptBundle(system=system, user=user)

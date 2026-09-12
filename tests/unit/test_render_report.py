@@ -211,3 +211,42 @@ def test_phase1c_profile_renders_recovery_metrics():
     assert "Verification layer metrics" in report
     assert "Retry layer metrics" in report
     assert "actions never reach env.step" in report
+
+
+def test_phase1d_profile_renders_replan_metrics():
+    r = load_renderer()
+    summary = make_summary_with_retry_recovery()
+    summary["config"]["reliability"]["replanning"] = {
+        "enabled": True,
+        "max_replans_per_episode": 1,
+        "recovery_failures_before_replan": 2,
+        "plan_horizon_steps": 3,
+        "recent_steps": 6,
+    }
+    summary["aggregate"].update({
+        "total_replan_count": 1,
+        "episodes_with_replan": 1,
+        "replan_success_count": 1,
+        "replan_failed_count": 0,
+        "replan_unresolved_count": 0,
+        "replan_success_rate": 1.0,
+        "total_replan_model_calls": 2,
+        "total_replan_input_tokens": 100,
+        "total_replan_output_tokens": 40,
+        "total_replan_latency_s": 1.2,
+        "reliability_extra_model_calls": 6,
+        "reliability_extra_tokens": 155,
+        "reliability_extra_latency_s": 3.2,
+    })
+    report = r.render(summary, make_episodes(), "phase1d")
+    assert report.startswith("# Phase 1D Controlled Replanning Report")
+    assert "## Replan layer metrics (Phase 1D)" in report
+    assert "| total_replan_count | 1 |" in report
+    assert "| replan_success_rate | 1.000 |" in report
+    assert "| total_replan_model_calls | 2 |" in report
+    assert "## Reliability total overhead (Phase 1)" in report
+    assert "| reliability_extra_model_calls | 6 |" in report
+    assert "no always-on planner" in report
+    # lower-phase sections remain present
+    assert "Recovery layer metrics" in report
+    assert "Retry layer metrics" in report

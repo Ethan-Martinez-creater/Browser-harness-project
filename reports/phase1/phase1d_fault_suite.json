@@ -1,0 +1,170 @@
+{
+  "suite": "phase1d_fault_suite",
+  "scenarios": [
+    {
+      "scenario": "D1 repeated loop after failed recovery",
+      "expected": "replan_count=1, replan succeeds, one plan artifact, one REPLAN event",
+      "assertions": {
+        "success": true,
+        "replan_count_is_1": true,
+        "replan_success": true,
+        "replan_model_calls_is_1": true,
+        "one_artifact": true,
+        "triggered_event": true,
+        "replan_invariant": true,
+        "recovery_invariant": true
+      },
+      "replan_count": 1,
+      "replan_success_count": 1,
+      "replan_model_calls": 1,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D2 recovery failure streak triggers replan",
+      "expected": "streak>=2 plus a new recoverable failure escalates deterministically",
+      "assertions": {
+        "success": true,
+        "replan_count_is_1": true,
+        "replan_success": true,
+        "streak_reason": true,
+        "streak_value_2": true,
+        "recovery_failed_is_2": true,
+        "replan_invariant": true
+      },
+      "replan_count": 1,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D3 replanning disabled causal control",
+      "expected": "identical trajectory without the replanner: no REPLAN events, no plan",
+      "assertions": {
+        "no_replan_events": true,
+        "replan_count_is_0": true,
+        "no_plan_artifacts": true,
+        "recovery_invariant": true
+      },
+      "replan_count": 0,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D4 replan budget exhausted falls back and continues",
+      "expected": "after the single replan: clean steps CONTINUE, recoverable failures fall back to Phase 1C recovery",
+      "assertions": {
+        "success": true,
+        "replan_count_is_1": true,
+        "no_policy_abort": true,
+        "fallback_recoveries": true,
+        "replan_invariant": true
+      },
+      "replan_count": 1,
+      "recovery_count": 3,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D5 plan horizon expires",
+      "expected": "horizon=2 expires after two real agent steps; the WAIT recovery noop inside the horizon does not consume it",
+      "assertions": {
+        "success": true,
+        "replan_count_is_1": true,
+        "replan_success": true,
+        "wait_recovery_present": true,
+        "plan_created_once": true,
+        "replan_invariant": true
+      },
+      "replan_count": 1,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D6 same failure repeats under active plan",
+      "expected": "the trigger signature reappearing fails the replan and deactivates the plan; max_replans=1 prevents a second intervention",
+      "assertions": {
+        "success": true,
+        "replan_count_is_1": true,
+        "replan_failed_is_1": true,
+        "one_triggered_event": true,
+        "replan_invariant": true
+      },
+      "replan_count": 1,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D7 replan generation parse repair",
+      "expected": "attempt 0 malformed JSON -> one repair retry -> plan activated; failed attempt artifact + token usage retained",
+      "assertions": {
+        "success": true,
+        "replan_count_is_1": true,
+        "model_calls_is_2": true,
+        "replan_success": true,
+        "tokens_retained": true,
+        "failed_attempt_artifact": true,
+        "replan_invariant": true
+      },
+      "replan_count": 1,
+      "replan_model_calls": 2,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D8a transient API failure retries then succeeds",
+      "expected": "one transient API error -> controlled retry -> plan created",
+      "assertions": {
+        "success": true,
+        "replan_count_is_1": true,
+        "model_calls_is_2": true,
+        "replan_success": true,
+        "replan_invariant": true
+      },
+      "replan_count": 1,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D8b persistent replan API failure falls back",
+      "expected": "generation fails (no browser action from replanner), replan FAILED outcome, execution falls back to Phase 1C recovery",
+      "assertions": {
+        "generation_failed_event": true,
+        "replan_count_is_1": true,
+        "replan_failed_is_1": true,
+        "model_calls_is_2": true,
+        "no_plan_artifact": true,
+        "replan_invariant": true,
+        "recovery_invariant": true
+      },
+      "replan_count": 1,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D9 terminal task never replans",
+      "expected": "terminated=true reward<=0: zero replans, zero planner model calls",
+      "assertions": {
+        "failed": true,
+        "replan_count_is_0": true,
+        "no_replan_events": true
+      },
+      "replan_count": 0,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D10 unresolved recovery is neutral",
+      "expected": "an episode-outlived recovery outcome is UNRESOLVED: no streak increment, no replan",
+      "assertions": {
+        "recovery_unresolved_is_1": true,
+        "recovery_failed_is_0": true,
+        "replan_count_is_0": true,
+        "recovery_invariant": true
+      },
+      "replan_count": 0,
+      "pass": true,
+      "failed_assertions": []
+    }
+  ],
+  "all_pass": true
+}

@@ -18,7 +18,23 @@ from web_harness.core.models import (
     TaskSpec,
 )
 
-__all__ = ["ModelAdapter", "ModelOutput", "select_history"]
+
+class StructuredModelAdapter(Protocol):
+    """Provider-neutral raw/structured generation (Phase 1D).
+
+    The adapter returns the model text UNPARSED in `decision.action`; JSON
+    validation and schema interpretation belong to the caller. Implemented by
+    the OpenAI-compatible and Mock adapters — no provider SDK may leak past
+    this boundary."""
+
+    def generate_structured(
+        self,
+        *,
+        prompt: PromptBundle,
+    ) -> ModelOutput: ...
+
+
+__all__ = ["ModelAdapter", "ModelOutput", "StructuredModelAdapter", "select_history"]
 
 HistoryRule = Callable[[list[StepRecord]], bool]
 

@@ -111,14 +111,10 @@ class OpenAICompatibleModelAdapter:
             timeout=timeout_s,
         )
 
-    def generate_action(
-        self,
-        *,
-        task: TaskSpec,
-        observation: Observation,
-        history: list[StepRecord],
-        prompt: PromptBundle,
-    ) -> ModelOutput:
+    def _complete(self, prompt: PromptBundle) -> tuple[str, int | None, int | None]:
+        """One chat completion: returns (raw_text, input_tokens, output_tokens).
+
+        Shared by generate_action and generate_structured (Phase 1D)."""
         messages = [
             {"role": "system", "content": prompt.system},
             {"role": "user", "content": prompt.user},
@@ -148,6 +144,19 @@ class OpenAICompatibleModelAdapter:
         usage = getattr(response, "usage", None)
         input_tokens = getattr(usage, "prompt_tokens", None) if usage else None
         output_tokens = getattr(usage, "completion_tokens", None) if usage else None
+        return raw_text, (
+            int(input_tokens) if input_tokens is not None else None
+        ), (int(output_tokens) if output_tokens is not None else None)
+
+    def generate_action(
+        self,
+        *,
+        task: TaskSpec,
+        observation: Observation,
+        history: list[StepRecord],
+        prompt: PromptBundle,
+    ) -> ModelOutput:
+        raw_text, input_tokens, output_tokens = self._complete(prompt)
 
         try:
             decision = parse_structured_action(raw_text)
@@ -157,15 +166,32 @@ class OpenAICompatibleModelAdapter:
             raise ModelOutputParseError(
                 exc.message,
                 raw_text=exc.raw_text,
-                input_tokens=int(input_tokens) if input_tokens is not None else None,
-                output_tokens=int(output_tokens) if output_tokens is not None else None,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 model_name=self.model,
             ) from exc
 
         return ModelOutput(
             decision=decision,
             model_name=self.model,
-            input_tokens=int(input_tokens) if input_tokens is not None else None,
-            output_tokens=int(output_tokens) if output_tokens is not None else None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            raw_text=raw_text,
+        )
+
+    def generate_structured(
+        self,
+        *,
+        prompt: PromptBundle,
+    ) -> ModelOutput:
+        """Provider-neutral structured generation (Phase 1D): the raw model
+        text is returned unparsed in `decision.action`; JSON validation and
+        schema interpretation belong to the caller (Replanner)."""
+        raw_text, input_tokens, output_tokens = self._complete(prompt)
+        return ModelOutput(
+            decision=ActionDecision(action=raw_text),
+            model_name=self.model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             raw_text=raw_text,
         )

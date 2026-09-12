@@ -183,6 +183,17 @@ class RunResult(BaseModel):
     # re-decided without executing it; separate from recovery_count (no new
     # directive), bounded by the same recovery budget as an anti-loop guard
     blocked_action_redecision_count: int = 0
+    # Phase 1D replan accounting. replan_count = started interventions;
+    # success + failed + unresolved == replan_count; replan_model_calls
+    # counts real model calls per intervention (incl. API/parse retries).
+    replan_count: int = 0
+    replan_success_count: int = 0
+    replan_failed_count: int = 0
+    replan_unresolved_count: int = 0
+    replan_model_calls: int = 0
+    replan_input_tokens: int = 0
+    replan_output_tokens: int = 0
+    replan_latency_s: float = 0.0
 
 
 def json_dump(model: BaseModel) -> str:

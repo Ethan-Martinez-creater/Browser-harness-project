@@ -144,6 +144,37 @@ def inspect_run(run_id: str, runs_root: str = typer.Option("runs")):
     console.print(f"Tokens: in={m['input_tokens']} out={m['output_tokens']}")
     console.print(f"Action errors: {m['action_error_count']}")
     console.print(f"Trace directory: {result.trace_path}")
+    # reliability summary (Phase 1B/1C/1D)
+    events = TraceRecorder.read_events(run_dir)
+    replan_events = [e for e in events if e.event_type.value == "replan"]
+    plan_summaries = [
+        {
+            "step": e.step_index,
+            "subgoal": (e.data.get("immediate_subgoal") or "")[:80],
+            "horizon": e.data.get("horizon_steps"),
+        }
+        for e in replan_events if e.outcome == "created"
+    ]
+    console.print(
+        f"Retries: {m['retry_count']} (cycles {m['retry_cycle_count']})"
+    )
+    console.print(
+        f"Recoveries: {m['recovery_count']} "
+        f"(success {m['recovery_success_count']} / "
+        f"failed {m['recovery_failed_count']} / "
+        f"unresolved {m['recovery_unresolved_count']})"
+    )
+    console.print(f"Replans: {m['replan_count']}")
+    console.print(f"Replan successes: {m['replan_success_count']}")
+    console.print(f"Replan failures: {m['replan_failed_count']}")
+    console.print(f"Replan unresolved: {m['replan_unresolved_count']}")
+    console.print(f"Replan model calls: {m['replan_model_calls']}")
+    if plan_summaries:
+        for ps in plan_summaries:
+            console.print(
+                f"  plan@step {ps['step']}: horizon={ps['horizon']} "
+                f"subgoal={ps['subgoal']}"
+            )
     steps = TraceRecorder.read_steps(run_dir)
     if steps:
         table = Table(title="Steps")

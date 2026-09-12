@@ -88,6 +88,21 @@ PROFILES = {
         "retry": True,
         "recovery": True,
     },
+    "phase1d": {
+        "title": "# Phase 1D Controlled Replanning Report",
+        "scope": [
+            "> **Scope warning**: this is the Phase 1D engineering smoke run.",
+            "It validates exception-path controlled replanning (deterministic",
+            "escalation trigger, budget-bounded short-horizon RecoveryPlan as",
+            "advisory prompt context) on the natural MiniWoB workload. It is",
+            "not a model-capability conclusion; there is no always-on planner",
+            "and no plan executor.",
+        ],
+        "reliability": True,
+        "retry": True,
+        "recovery": True,
+        "replan": True,
+    },
 }
 
 
@@ -229,6 +244,64 @@ def render_recovery_metrics(summary: dict) -> list[str]:
     return lines
 
 
+def render_replan_metrics(summary: dict) -> list[str]:
+    agg = summary["aggregate"]
+    config = summary.get("config", {})
+    reliability_cfg = config.get("reliability") or {}
+    replan_cfg = reliability_cfg.get("replanning") or {}
+    lines = [
+        "## Replan layer metrics (Phase 1D)",
+        "",
+        f"- replanning enabled: {replan_cfg.get('enabled', False)}",
+        f"- replanning.max_replans_per_episode: "
+        f"{replan_cfg.get('max_replans_per_episode', 1)}",
+        f"- replanning.recovery_failures_before_replan: "
+        f"{replan_cfg.get('recovery_failures_before_replan', 2)}",
+        f"- replanning.plan_horizon_steps: "
+        f"{replan_cfg.get('plan_horizon_steps', 3)}",
+        f"- replanning.recent_steps (bounded replanner input): "
+        f"{replan_cfg.get('recent_steps', 6)}",
+        "",
+        "| metric | value |",
+        "|---|---:|",
+        f"| total_replan_count | {agg.get('total_replan_count', 0)} |",
+        f"| episodes_with_replan | {agg.get('episodes_with_replan', 0)} |",
+        f"| replan_success_count | {agg.get('replan_success_count', 0)} |",
+        f"| replan_failed_count | {agg.get('replan_failed_count', 0)} |",
+        f"| replan_unresolved_count | {agg.get('replan_unresolved_count', 0)} |",
+        f"| replan_success_rate | {fmt_num(agg.get('replan_success_rate', 0.0))} |",
+        f"| total_replan_model_calls | {agg.get('total_replan_model_calls', 0)} |",
+        f"| total_replan_input_tokens | {agg.get('total_replan_input_tokens', 0)} |",
+        f"| total_replan_output_tokens | {agg.get('total_replan_output_tokens', 0)} |",
+        f"| total_replan_latency_s | "
+        f"{fmt_num(agg.get('total_replan_latency_s', 0.0))} |",
+        "",
+        "Replan scope guarantees: replanning is escalation-only (never on",
+        "PASS / single NO_PROGRESS / model-side failures / first observation",
+        "recovery / TASK_FAILED); the RecoveryPlan is advisory prompt context",
+        "for the reactive agent, never executed; plan horizon is consumed",
+        "only by real Agent StepRecords; outcome invariant success + failed",
+        "+ unresolved == replan_count; replan model calls share the Phase 1B",
+        "retry protections and the global extra-model-call budget.",
+        "",
+        "## Reliability total overhead (Phase 1)",
+        "",
+        "| metric | value |",
+        "|---|---:|",
+        f"| reliability_extra_model_calls | "
+        f"{agg.get('reliability_extra_model_calls', 0)} |",
+        f"| reliability_extra_tokens | "
+        f"{agg.get('reliability_extra_tokens', 0)} |",
+        f"| reliability_extra_latency_s | "
+        f"{fmt_num(agg.get('reliability_extra_latency_s', 0.0))} |",
+        "",
+        "Total overhead = retry extra model calls + replan model calls;",
+        "tokens = retry + replan tokens; latency = retry + recovery + replan.",
+        "",
+    ]
+    return lines
+
+
 def render(summary: dict, episodes: list[dict], profile: str) -> str:
     p = PROFILES[profile]
     agg = summary["aggregate"]
@@ -302,6 +375,8 @@ def render(summary: dict, episodes: list[dict], profile: str) -> str:
         lines.extend(render_retry_metrics(summary))
     if p.get("recovery"):
         lines.extend(render_recovery_metrics(summary))
+    if p.get("replan"):
+        lines.extend(render_replan_metrics(summary))
     lines.append(
         "`estimated_cost` is null by design: the harness never guesses prices "
         "without a reliable price table; token counts above are the "
