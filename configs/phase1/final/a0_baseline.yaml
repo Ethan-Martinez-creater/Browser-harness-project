@@ -1,0 +1,54 @@
+# a0_baseline
+
+reliability:
+  enabled: false
+
+# Phase 1 Final Ablation — {name}
+# Frozen at commit 1436cb2. Identical to the approved Phase 1D config except
+# the reliability capability switches below. Do NOT tune parameters.
+
+model:
+  provider: openai_compatible
+  model: deepseek-flash
+  base_url_env: MODEL_BASE_URL
+  api_key_env: MODEL_API_KEY
+  temperature: 0.0
+  timeout_s: 120
+
+agent:
+  type: baseline
+  max_history_steps: 4
+  observation_char_limit: 30000
+
+runtime:
+  max_steps: 20
+
+trace:
+  root_dir: runs
+  save_prompts: true
+  save_model_responses: true
+  save_screenshots: false
+
+environment:
+  bootstrap_action: "noop(wait_ms=500)"
+  headless: true
+
+benchmark:
+  benchmark: miniwob
+  tasks:
+    - click-test
+    - click-button
+    - enter-text
+    - choose-list
+    - click-checkboxes
+    - click-link
+    - login-user
+    - read-table
+    - navigate-tree
+    - use-autocomplete
+    - choose-date-easy
+    - order-food
+  seeds:
+    - 0
+    - 1
+    - 2
