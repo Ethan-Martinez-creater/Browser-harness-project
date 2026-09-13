@@ -1,9 +1,0 @@
-{
-  "decision": {
-    "action": "click(bid='2')",
-    "short_reason": null
-  },
-  "model_name": "mock",
-  "input_tokens": null,
-  "output_tokens": null
-}
