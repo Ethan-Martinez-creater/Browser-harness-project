@@ -4,24 +4,42 @@ Tracing exists from day one because **trace is harness infrastructure, not a
 UI feature**: it enables debugging, failure analysis, replay, evaluation and
 later checkpoint/verification work.
 
+## Schema versioning (Phase 2A1)
+
+`manifest.json` carries `trace_schema_version`:
+
+- **v1** — the Phase 0–1D layout (text observation artifacts only, no
+  version field). Legacy traces are never modified; a manifest without the
+  field is treated as v1 by offline tooling.
+- **v2** — the current layout: adds structured Observation JSON artifacts
+  (`obs_NNN.json` / `next_obs_NNN.json`) plus the additive `StepRecord`
+  references `observation_json_ref` / `next_observation_json_ref`. The
+  `.txt` artifacts keep their existing semantics. v2 is the first version
+  consumed by offline semantic replay.
+
 ## Directory layout
 
 ```text
 runs/<run_id>/
-  manifest.json        run provenance
+  manifest.json        run provenance (incl. trace_schema_version)
   steps.jsonl          one StepRecord per line, fsynced after every step
   result.json          final RunResult
   artifacts/
     obs_000.txt        PRE-action observation (the model's decision input)
+    obs_000.json       structured Observation JSON twin (v2, additive)
     prompt_000.txt     exact system+user prompt sent to the model
     model_000.json     ModelOutput (decision, tokens; no raw CoT)
     raw_000.txt        raw model response text (if enabled)
     next_obs_000.txt   POST-action observation (result of the action)
+    next_obs_000.json  structured Observation JSON twin (v2, additive)
     raw_failed_NNN.txt raw model output of a step whose parsing failed
     screenshot_*.png   optional (save_screenshots: false by default)
 ```
 
-Artifact names are deterministic (zero-padded step index).
+Artifact names are deterministic (zero-padded step index). The `.json`
+observation twins are written by `TraceRecorder.record_step` from
+`Observation.model_dump(mode="json")` — the same normalized observation the
+agent actually decided on, in machine-readable form.
 
 ## Step trace semantics
 
@@ -91,6 +109,7 @@ single canonical config path: `reliability.recovery.max_recoveries_per_episode`.
 {
   "run_id": "run-...",
   "timestamp": "2026-09-12T03:00:00Z",
+  "trace_schema_version": 2,
   "git_commit": "9db4d27..." ,
   "config_hash": "sha256[:16] of resolved config",
   "python_version": "3.11.16",
@@ -118,6 +137,8 @@ environment bootstrap (see `ADR-004`); `null` when disabled.
 | url | str? | page URL before the action (pre-action observation) |
 | observation_ref | str? | `artifacts/obs_NNN.txt` — pre-action, decision input |
 | next_observation_ref | str? | `artifacts/next_obs_NNN.txt` — post-action result |
+| observation_json_ref | str? | `artifacts/obs_NNN.json` — structured twin (v2, additive) |
+| next_observation_json_ref | str? | `artifacts/next_obs_NNN.json` — structured twin (v2, additive) |
 | prompt_ref | str? | `artifacts/prompt_NNN.txt` (configurable) |
 | model_response_ref | str? | `artifacts/model_NNN.json` (configurable) |
 | action | str? | executed action; null when decision failed |
@@ -163,3 +184,39 @@ the harness never guesses prices.
 Phase 2 (checkpoint/resume) will extend RunState serialization from this
 same schema; Phase 1 verifiers will append verification fields to
 StepRecord without breaking existing consumers (additive only).
+
+## Offline replay (Phase 2A1)
+
+A recorded run can be validated entirely offline — zero model calls, zero
+environment actions, and the original trace is never modified:
+
+```bash
+web-harness replay <run_id> [--runs-root runs] [--semantic/--no-semantic]
+```
+
+Pipeline: `TraceBundleLoader` → `TraceReplayEngine` → `ReplayReport`
+(`src/web_harness/persistence/replay.py`). Structural violations never
+raise; they are collected into the structured report.
+
+Two replay levels:
+
+1. **Structural replay** (all trace versions): step_index contiguity,
+   run_id consistency across steps/events/result, event step_index
+   validity, artifact reference existence, `result.num_steps` vs recorded
+   steps, token/metric recomputation (`input_tokens = sum(steps) +
+   replan_input_tokens`, action errors, verification counts) and the
+   recovery / replan outcome invariants.
+2. **Semantic verification replay** (v2 only): for every step with a
+   recorded verification event, the recorded pre/post structured
+   Observations plus the recorded action are re-fed through the
+   deterministic `StepVerifier` with a fresh `ReliabilityState`, and the
+   regenerated status + (kind, severity, signature) signal multiset is
+   compared against the recorded verification event. Only the StepVerifier
+   is replayed — never the LLM, the DecisionExecutor, the environment, the
+   RecoveryManager or the Replanner. Legacy v1 traces skip this level
+   (reported as a note, not an error).
+
+The replay report counts `replayed_verifications`,
+`verification_mismatches`, `artifact_missing_count`,
+`invariant_error_count` and `metric_mismatches`; the CLI exits 1 when the
+trace is structurally invalid or a verification mismatch is found.

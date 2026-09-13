@@ -38,6 +38,7 @@ from web_harness.core.models import RunResult, RunStatus, StepRecord, TaskSpec
 from web_harness.core.reliability import FailureKind, ReliabilityBudget
 from web_harness.env.base import EnvironmentAdapter
 from web_harness.observability.trace import TraceRecorder
+from web_harness.persistence.schema import TRACE_SCHEMA_VERSION
 from web_harness.reliability.fingerprint import fingerprint_of
 from web_harness.reliability.policy import PolicyAction
 from web_harness.reliability.recovery import RecoveryManager
@@ -139,6 +140,7 @@ class EpisodeRunner:
                 {
                     "run_id": run_id,
                     "timestamp": now_utc_iso(),
+                    "trace_schema_version": TRACE_SCHEMA_VERSION,
                     "git_commit": git_commit(),
                     "config_hash": self.manifest_extra.get("config_hash"),
                     "python_version": sys.version.split()[0],

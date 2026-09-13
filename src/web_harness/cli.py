@@ -4,6 +4,7 @@ Commands:
     run          execute a single task episode
     benchmark    execute a benchmark config (task x seeds, serial)
     inspect-run  print a text summary of one recorded run
+    replay       offline replay/validate of a recorded run (no model, no browser)
 """
 
 from __future__ import annotations
@@ -190,6 +191,64 @@ def inspect_run(run_id: str, runs_root: str = typer.Option("runs")):
                 str(s.output_tokens if s.output_tokens is not None else "-"),
             )
         console.print(table)
+
+
+@app.command()
+def replay(
+    run_id: str,
+    runs_root: str = typer.Option("runs", help="Directory containing run folders"),
+    semantic: bool = typer.Option(
+        True, "--semantic/--no-semantic",
+        help="Also replay the deterministic StepVerifier (schema v2 traces)",
+    ),
+):
+    """Offline replay/validate of a recorded run.
+
+    Pure offline analysis: zero model calls, zero environment actions, and
+    the original trace is never modified. Exits 1 when the trace is
+    structurally invalid or a verifier replay mismatch is found.
+    """
+    from web_harness.persistence.replay import TraceBundleLoader, TraceReplayEngine
+
+    run_dir = Path(runs_root) / run_id
+    if not run_dir.is_dir():
+        typer.secho(f"run directory not found: {run_dir}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    bundle = TraceBundleLoader().load(run_dir)
+    report = TraceReplayEngine(semantic_replay=semantic).run(bundle)
+
+    console.print(f"Run ID: {report.run_id or '-'}")
+    console.print(f"Trace schema version: {report.trace_schema_version}")
+    console.print(f"Steps: {report.step_count}")
+    console.print(f"Events: {report.event_count}")
+    console.print(
+        "Structural validation: "
+        + ("VALID" if report.structural_valid else "INVALID")
+    )
+    console.print(
+        "Artifact validation: "
+        + ("OK" if report.artifact_missing_count == 0
+           else f"{report.artifact_missing_count} missing")
+    )
+    console.print(
+        "Metric validation: "
+        + ("OK" if not report.metric_mismatches
+           else f"{len(report.metric_mismatches)} mismatches")
+    )
+    console.print(f"Verifier replay: {report.replayed_verifications} verifications")
+    console.print(
+        "Verification mismatches: "
+        + ("0" if not report.verification_mismatches
+           else str(len(report.verification_mismatches)))
+    )
+    for note in report.notes:
+        console.print(f"[dim]note: {note}[/dim]")
+    for mismatch in report.metric_mismatches + report.verification_mismatches:
+        console.print(f"[yellow]mismatch: {mismatch}[/yellow]")
+    for error in report.errors:
+        console.print(f"[red]error: {error}[/red]")
+    if not report.structural_valid or report.verification_mismatches:
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

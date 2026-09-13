@@ -106,6 +106,10 @@ class StepRecord(BaseModel):
     url: str | None = None
     observation_ref: str | None = None  # pre-action observation (decision input)
     next_observation_ref: str | None = None  # post-action observation (result)
+    # Phase 2A1: structured Observation JSON artifacts (additive; the .txt
+    # observation artifacts keep their existing semantics)
+    observation_json_ref: str | None = None
+    next_observation_json_ref: str | None = None
     prompt_ref: str | None = None
     model_response_ref: str | None = None
     action: str | None = None

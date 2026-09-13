@@ -190,11 +190,23 @@ class TraceRecorder:
             obs_ref = f"artifacts/obs_{pad}.txt"
             _write_text(self.run_dir / obs_ref, _observation_text(observation))
             step.observation_ref = obs_ref
+            # structured JSON twin (Phase 2A1): machine-readable observation
+            # for offline replay; the .txt artifact stays the human view
+            obs_json_ref = f"artifacts/obs_{pad}.json"
+            _write_json(
+                self.run_dir / obs_json_ref, observation.model_dump(mode="json")
+            )
+            step.observation_json_ref = obs_json_ref
 
         if next_observation is not None:
             next_ref = f"artifacts/next_obs_{pad}.txt"
             _write_text(self.run_dir / next_ref, _observation_text(next_observation))
             step.next_observation_ref = next_ref
+            next_json_ref = f"artifacts/next_obs_{pad}.json"
+            _write_json(
+                self.run_dir / next_json_ref, next_observation.model_dump(mode="json")
+            )
+            step.next_observation_json_ref = next_json_ref
 
         if prompt is not None and self.save_prompts:
             prompt_ref = f"artifacts/prompt_{pad}.txt"
