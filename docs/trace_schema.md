@@ -111,6 +111,22 @@ single canonical config path: `reliability.recovery.max_recoveries_per_episode`.
   "timestamp": "2026-09-12T03:00:00Z",
   "trace_schema_version": 2,
   "git_commit": "9db4d27..." ,
+  "verification_spec": {
+    "implementation": "DefaultStepVerifier",
+    "detect_no_progress": true,
+    "detect_loop": true,
+    "loop_consecutive_threshold": 2
+  },
+```
+
+`verification_spec` records the **effective verifier configuration** the
+live run actually used (Phase 2A1 provenance, closure B1). Offline semantic
+replay rebuilds the verifier from this spec instead of guessing defaults;
+a v2 trace with verification events but no rebuildable spec skips semantic
+replay with an explicit note. `null` when verification is off. Schema
+version resolution is fail-closed: a missing field means legacy v1, an
+invalid or unsupported version becomes a structured replay error (supported
+versions: `{1, 2}`).
   "config_hash": "sha256[:16] of resolved config",
   "python_version": "3.11.16",
   "platform": "Windows-10-...",
@@ -205,18 +221,33 @@ Two replay levels:
    validity, artifact reference existence, `result.num_steps` vs recorded
    steps, token/metric recomputation (`input_tokens = sum(steps) +
    replan_input_tokens`, action errors, verification counts) and the
-   recovery / replan outcome invariants.
-2. **Semantic verification replay** (v2 only): for every step with a
-   recorded verification event, the recorded pre/post structured
-   Observations plus the recorded action are re-fed through the
+   recovery / replan outcome invariants. Structural replay also enforces
+   **verification event completeness**: every StepRecord with a
+   `verification_status` must map to exactly one verification event whose
+   `outcome` and failure kinds match the StepRecord summary — missing,
+   duplicate or orphan verification events invalidate the trace.
+2. **Semantic verification replay** (v2 only): the verifier is rebuilt from
+   the recorded manifest `verification_spec` (never from defaults). For
+   every step with a recorded verification event, the recorded pre/post
+   structured Observations plus the recorded action are re-fed through the
    deterministic `StepVerifier` with a fresh `ReliabilityState`, and the
-   regenerated status + (kind, severity, signature) signal multiset is
+   regenerated status, (kind, severity, signature) signal multiset and
+   fingerprint provenance (pre/post fingerprint, `state_changed`) are
    compared against the recorded verification event. Only the StepVerifier
    is replayed — never the LLM, the DecisionExecutor, the environment, the
-   RecoveryManager or the Replanner. Legacy v1 traces skip this level
-   (reported as a note, not an error).
+   RecoveryManager or the Replanner. Legacy v1 traces and traces without a
+   rebuildable verifier spec skip this level (reported as a note, not an
+   error).
 
-The replay report counts `replayed_verifications`,
-`verification_mismatches`, `artifact_missing_count`,
-`invariant_error_count` and `metric_mismatches`; the CLI exits 1 when the
-trace is structurally invalid or a verification mismatch is found.
+The replay report distinguishes three validity dimensions:
+
+- `structural_valid` — layout/consistency/metric checks;
+- `semantic_valid` — `True` when semantic replay ran and matched, `False`
+  on mismatches or semantic-stage errors, `None` when it did not run
+  (legacy trace, `--no-semantic`, or no rebuildable verifier spec);
+- `overall_valid` — CLI-facing fail-closed verdict: structural invalidity
+  or `semantic_valid == False` exits 1; a skipped semantic pass does not.
+
+A corrupt structured observation artifact (present but unparsable) is a
+real replay error: it makes `semantic_valid = False` and the CLI exit 1 —
+never a silent pass.

@@ -101,6 +101,20 @@ class DefaultStepVerifier:
                 TaskFailureDetector(),
             ]
         self.detectors = [d for d in detectors if d is not None]
+        # effective behavior (Phase 2A1): persisted into the run manifest so
+        # offline semantic replay can rebuild the verifier the live run used
+        self.detect_no_progress = detect_no_progress
+        self.detect_loop = detect_loop
+        self.loop_consecutive_threshold = loop_consecutive_threshold
+
+    def spec(self) -> dict:
+        """Recorded effective verifier specification for trace provenance."""
+        return {
+            "implementation": "DefaultStepVerifier",
+            "detect_no_progress": self.detect_no_progress,
+            "detect_loop": self.detect_loop,
+            "loop_consecutive_threshold": self.loop_consecutive_threshold,
+        }
 
     def verify(
         self,

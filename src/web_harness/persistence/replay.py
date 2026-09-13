@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field, ValidationError
 from web_harness.core.events import RuntimeEvent, RuntimeEventType
 from web_harness.core.models import EnvironmentStep, Observation, RunResult, StepRecord, TaskSpec
 from web_harness.core.reliability import ReliabilityState
-from web_harness.persistence.schema import manifest_schema_version
+from web_harness.persistence.schema import parse_manifest_schema_version
 
 # StepRecord reference fields that must point at existing files
 _ARTIFACT_REF_FIELDS = (
@@ -96,8 +96,17 @@ class TraceBundleLoader:
         else:
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError, ValueError) as exc:
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
                 errors.append(f"manifest.json unparsable: {exc}")
+                manifest = {}
+            if not isinstance(manifest, dict):
+                # parse succeeded but the shape is wrong: fail closed with a
+                # structured error instead of tripping model validation
+                errors.append("manifest.json top level is not a JSON object")
+                manifest = {}
+
+        schema_version, schema_errors = parse_manifest_schema_version(manifest)
+        errors.extend(schema_errors)
 
         steps = self._read_jsonl(
             run_dir / "steps.jsonl",
@@ -117,12 +126,12 @@ class TraceBundleLoader:
                 result = RunResult.model_validate_json(
                     result_path.read_text(encoding="utf-8")
                 )
-            except (OSError, ValidationError, ValueError) as exc:
+            except (OSError, UnicodeDecodeError, ValidationError, ValueError) as exc:
                 errors.append(f"result.json unparsable: {exc}")
 
         return TraceBundle(
             run_dir=str(run_dir),
-            trace_schema_version=manifest_schema_version(manifest),
+            trace_schema_version=schema_version,
             manifest=manifest,
             steps=steps,
             events=events,
@@ -143,10 +152,13 @@ class TraceBundleLoader:
             if required:
                 errors.append(f"{label} missing")
             return []
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"{label} unreadable: {exc}")
+            return []
         records = []
-        for line_no, line in enumerate(
-            path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
+        for line_no, line in enumerate(text.splitlines(), start=1):
             if not line.strip():
                 continue
             try:
@@ -181,23 +193,34 @@ class ReplayReport(BaseModel):
 
     replayed_verifications: int = 0
     semantic_replay_skipped: bool = False
+    # None = semantic replay did not run (legacy trace, --no-semantic, or no
+    # rebuildable verifier spec); True = ran and matched; False = ran and
+    # found mismatches or hit semantic-stage errors (fail-closed)
+    semantic_valid: bool | None = None
 
     notes: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+
+    @property
+    def overall_valid(self) -> bool:
+        """CLI-facing verdict: any real replay failure fails the run."""
+        return self.structural_valid and self.semantic_valid is not False
 
 
 class TraceReplayEngine:
     """Offline replay engine: structural validation + semantic verifier replay.
 
-    `verifier` defaults to the deterministic DefaultStepVerifier; an injected
-    verifier must be deterministic for replay comparisons to be meaningful.
+    The verifier is resolved in this order:
+
+    1. an explicitly injected `verifier` (programmatic use / tests);
+    2. the recorded `verification_spec` from the run manifest (schema v2) —
+       the effective DefaultStepVerifier configuration the live run used;
+    3. no verifier: semantic replay is skipped with an explicit note (a v2
+       trace with verification events but no reusable spec is NEVER silently
+       replayed against default settings).
     """
 
     def __init__(self, *, verifier=None, semantic_replay: bool = True):
-        if semantic_replay and verifier is None:
-            from web_harness.reliability.verifier import DefaultStepVerifier
-
-            verifier = DefaultStepVerifier()
         self._verifier = verifier
         self._semantic_replay = semantic_replay
         self._loader = TraceBundleLoader()
@@ -212,9 +235,20 @@ class TraceReplayEngine:
         self._structural_replay(bundle, report)
         report.structural_valid = not report.errors and not report.metric_mismatches
         if self._semantic_replay:
+            errors_before = len(report.errors)
             self._semantic_verification_replay(bundle, report)
+            if report.semantic_replay_skipped:
+                report.semantic_valid = None
+            else:
+                # fail-closed: semantic-stage errors (e.g. corrupt structured
+                # observations) or mismatches make the semantic pass invalid
+                report.semantic_valid = (
+                    len(report.errors) == errors_before
+                    and not report.verification_mismatches
+                )
         else:
             report.semantic_replay_skipped = True
+            report.semantic_valid = None
         return report
 
     # -- structural replay ---------------------------------------------------
@@ -339,20 +373,95 @@ class TraceReplayEngine:
                     f"!= replan_count({result.replan_count})"
                 )
 
+        # verification event completeness (R1): the event stream is the
+        # authoritative verification record, so every verified StepRecord
+        # must map to exactly one verification event with a consistent
+        # summary — missing, duplicate or orphan events invalidate the trace
+        events_by_step: dict[int, list[RuntimeEvent]] = {}
+        for event in bundle.events:
+            if event.event_type != RuntimeEventType.VERIFICATION:
+                continue
+            if event.step_index is None:
+                report.errors.append(
+                    f"verification event {event.event_id} has no step_index"
+                )
+                continue
+            events_by_step.setdefault(event.step_index, []).append(event)
+        for step in bundle.steps:
+            step_events = events_by_step.get(step.step_index, [])
+            if step.verification_status is None:
+                if step_events:
+                    report.errors.append(
+                        f"orphan verification event(s) for step "
+                        f"{step.step_index}: StepRecord.verification_status "
+                        f"is None"
+                    )
+                continue
+            if not step_events:
+                report.errors.append(
+                    f"missing verification event for verified step "
+                    f"{step.step_index} (status={step.verification_status})"
+                )
+                continue
+            if len(step_events) > 1:
+                report.errors.append(
+                    f"duplicate verification events for step "
+                    f"{step.step_index}: {len(step_events)} events"
+                )
+                continue
+            event = step_events[0]
+            if event.outcome != step.verification_status:
+                report.errors.append(
+                    f"verification summary mismatch for step "
+                    f"{step.step_index}: event outcome="
+                    f"{event.outcome!r} != StepRecord."
+                    f"verification_status={step.verification_status!r}"
+                )
+            event_kinds = sorted(
+                {
+                    str(sig.get("kind") if isinstance(sig, dict) else sig.kind.value)
+                    for sig in event.data.get("signals", [])
+                }
+            )
+            if event_kinds != sorted(step.failure_kinds):
+                report.errors.append(
+                    f"verification kinds mismatch for step "
+                    f"{step.step_index}: event={event_kinds} != "
+                    f"StepRecord.failure_kinds={sorted(step.failure_kinds)}"
+                )
+
     # -- semantic verification replay ----------------------------------------
 
     def _semantic_verification_replay(
         self, bundle: TraceBundle, report: ReplayReport
     ) -> None:
-        if bundle.trace_schema_version < 2:
+        if bundle.trace_schema_version == 1:
             report.semantic_replay_skipped = True
             report.notes.append(
                 "semantic replay skipped: legacy trace schema v1 has no "
                 "structured Observation JSON artifacts"
             )
             return
-        if self._verifier is None:
+        if bundle.trace_schema_version != 2:
             report.semantic_replay_skipped = True
+            report.notes.append(
+                f"semantic replay skipped: trace schema version "
+                f"{bundle.trace_schema_version} is not supported for "
+                f"semantic replay"
+            )
+            return
+        verifier = self._verifier or self._verifier_from_spec(bundle.manifest)
+        if verifier is None:
+            report.semantic_replay_skipped = True
+            if any(
+                e.event_type == RuntimeEventType.VERIFICATION
+                for e in bundle.events
+            ):
+                report.notes.append(
+                    "semantic replay skipped: verification events present "
+                    "but the manifest has no rebuildable verifier spec — "
+                    "refusing to replay against default settings"
+                )
             return
         task = self._task_of(bundle)
         if task is None:
@@ -406,7 +515,7 @@ class TraceReplayEngine:
                 truncated=step.truncated,
                 action_error=step.action_error,
             )
-            verification = self._verifier.verify(
+            verification = verifier.verify(
                 task=task,
                 pre_observation=pre_obs,
                 action=step.action,
@@ -418,6 +527,28 @@ class TraceReplayEngine:
             mismatch = self._compare_verification(step.step_index, event, verification)
             if mismatch:
                 report.verification_mismatches.append(mismatch)
+
+    @staticmethod
+    def _verifier_from_spec(manifest: dict):
+        """Rebuild the recorded effective verifier from manifest provenance.
+
+        Returns None when the spec is absent or names an implementation this
+        harness cannot rebuild offline (never guesses defaults).
+        """
+        spec = manifest.get("verification_spec")
+        if not isinstance(spec, dict):
+            return None
+        if spec.get("implementation") != "DefaultStepVerifier":
+            return None
+        from web_harness.reliability.verifier import DefaultStepVerifier
+
+        return DefaultStepVerifier(
+            detect_no_progress=bool(spec.get("detect_no_progress", True)),
+            detect_loop=bool(spec.get("detect_loop", True)),
+            loop_consecutive_threshold=int(
+                spec.get("loop_consecutive_threshold", 2)
+            ),
+        )
 
     @staticmethod
     def _task_of(bundle: TraceBundle) -> TaskSpec | None:
@@ -437,10 +568,13 @@ class TraceReplayEngine:
     def _compare_verification(
         step_index: int, event: RuntimeEvent, verification
     ) -> str | None:
-        """Deterministic comparison: status + (kind, severity, signature) multiset.
+        """Deterministic comparison of a replayed verification pass.
 
-        `evidence` dicts are deliberately not compared: they carry the full
-        detector context, and the semantic contract is the signal identity.
+        Compares status, the (kind, severity, signature) signal multiset and
+        the deterministic fingerprint provenance (pre/post fingerprint,
+        state_changed). `evidence` dicts are deliberately not compared: they
+        carry the full detector context, and the semantic contract is the
+        signal identity.
         """
 
         def signal_key(signal) -> tuple[str, str, str]:
@@ -462,10 +596,24 @@ class TraceReplayEngine:
         )
         recorded_status = event.outcome
         replayed_status = verification.status.value
-        if recorded_status == replayed_status and recorded_keys == replayed_keys:
+        mismatches = []
+        if recorded_status != replayed_status:
+            mismatches.append(
+                f"status recorded={recorded_status!r} != "
+                f"replayed={replayed_status!r}"
+            )
+        if recorded_keys != replayed_keys:
+            mismatches.append(
+                f"signals recorded={recorded_keys} != replayed={replayed_keys}"
+            )
+        for field in ("pre_fingerprint", "post_fingerprint", "state_changed"):
+            recorded_value = event.data.get(field)
+            replayed_value = getattr(verification, field)
+            if recorded_value != replayed_value:
+                mismatches.append(
+                    f"{field} recorded={recorded_value!r} != "
+                    f"replayed={replayed_value!r}"
+                )
+        if not mismatches:
             return None
-        return (
-            f"step {step_index}: recorded (status={recorded_status}, "
-            f"signals={recorded_keys}) != replayed (status={replayed_status}, "
-            f"signals={replayed_keys})"
-        )
+        return f"step {step_index}: " + "; ".join(mismatches)

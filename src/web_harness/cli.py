@@ -226,6 +226,11 @@ def replay(
         + ("VALID" if report.structural_valid else "INVALID")
     )
     console.print(
+        "Semantic validation: "
+        + ("SKIPPED" if report.semantic_valid is None
+           else "VALID" if report.semantic_valid else "INVALID")
+    )
+    console.print(
         "Artifact validation: "
         + ("OK" if report.artifact_missing_count == 0
            else f"{report.artifact_missing_count} missing")
@@ -247,7 +252,9 @@ def replay(
         console.print(f"[yellow]mismatch: {mismatch}[/yellow]")
     for error in report.errors:
         console.print(f"[red]error: {error}[/red]")
-    if not report.structural_valid or report.verification_mismatches:
+    # fail-closed: any real replay error (structural or semantic) exits 1;
+    # a skipped semantic pass (legacy trace / --no-semantic) does not
+    if not report.overall_valid:
         raise typer.Exit(code=1)
 
 

@@ -53,6 +53,21 @@ def _priority_signature(signals) -> str | None:
             return signal.signature
     return signals[0].signature if signals else None
 
+
+def _verifier_spec(verifier) -> dict | None:
+    """Effective verifier specification for manifest provenance.
+
+    Verifiers that expose `spec()` record their full effective behavior;
+    other implementations record identity only (offline semantic replay
+    cannot rebuild them and must say so instead of guessing).
+    """
+    if verifier is None:
+        return None
+    spec_method = getattr(verifier, "spec", None)
+    if spec_method is not None:
+        return spec_method()
+    return {"implementation": type(verifier).__name__}
+
 logger = logging.getLogger(__name__)
 
 
@@ -152,6 +167,10 @@ class EpisodeRunner:
                     "seed": task.seed,
                     "max_steps": task.max_steps,
                     "environment_bootstrap_action": bootstrap,
+                    # recorded effective verifier behavior (Phase 2A1
+                    # provenance) so offline semantic replay can rebuild the
+                    # verifier the live run actually used
+                    "verification_spec": _verifier_spec(self.verifier),
                     **{
                         k: v
                         for k, v in self.manifest_extra.items()
