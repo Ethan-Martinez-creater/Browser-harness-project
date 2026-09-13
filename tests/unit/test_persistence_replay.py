@@ -690,3 +690,167 @@ def test_cli_semantic_artifact_parse_error_exits_one(tmp_path):
     )
     result = run_cli(tmp_path, run_dir.name)
     assert result.exit_code == 1
+
+
+# -- closure micro-fixes: required semantic inputs & strict verifier spec -----
+
+
+def test_m1_missing_observation_json_ref_fails_closed(tmp_path):
+    run_dir = build_run(tmp_path)
+
+    def drop_ref(record):
+        del record["observation_json_ref"]
+
+    edit_jsonl(run_dir / "steps.jsonl", 0, drop_ref)
+    _, report = replay(run_dir)
+    assert any(
+        "missing required input" in e and "observation_json_ref" in e
+        for e in report.errors
+    )
+    # fail closed: an error, not a note-only skip
+    assert report.semantic_valid is False
+    assert report.overall_valid is False
+
+
+def test_m2_missing_next_observation_json_ref_fails_closed(tmp_path):
+    run_dir = build_run(tmp_path)
+
+    def drop_ref(record):
+        del record["next_observation_json_ref"]
+
+    edit_jsonl(run_dir / "steps.jsonl", 0, drop_ref)
+    _, report = replay(run_dir)
+    assert any(
+        "missing required input" in e and "next_observation_json_ref" in e
+        for e in report.errors
+    )
+    assert report.semantic_valid is False
+    assert report.overall_valid is False
+
+
+def test_m3_spec_with_string_bool_fails_closed(tmp_path):
+    run_dir = build_run(tmp_path)
+
+    def break_spec(manifest):
+        manifest["verification_spec"] = {
+            "implementation": "DefaultStepVerifier",
+            "detect_no_progress": True,
+            "detect_loop": "false",  # truthiness would coerce this to True
+            "loop_consecutive_threshold": 2,
+        }
+
+    edit_manifest(run_dir, break_spec)
+    _, report = replay(run_dir)
+    assert any("verification_spec malformed" in e for e in report.errors)
+    assert report.replayed_verifications == 0
+    assert report.semantic_valid is False
+    assert report.overall_valid is False
+
+
+def test_m4_spec_with_string_threshold_fails_closed_without_traceback(tmp_path):
+    run_dir = build_run(tmp_path)
+
+    def break_spec(manifest):
+        manifest["verification_spec"] = {
+            "implementation": "DefaultStepVerifier",
+            "detect_no_progress": True,
+            "detect_loop": True,
+            "loop_consecutive_threshold": "broken",  # int() would raise
+        }
+
+    edit_manifest(run_dir, break_spec)
+    _, report = replay(run_dir)  # must not raise
+    assert any("verification_spec malformed" in e for e in report.errors)
+    assert report.semantic_valid is False
+    assert report.overall_valid is False
+
+
+def test_m4b_spec_with_non_positive_threshold_fails_closed(tmp_path):
+    run_dir = build_run(tmp_path)
+
+    def break_spec(manifest):
+        manifest["verification_spec"] = {
+            "implementation": "DefaultStepVerifier",
+            "detect_no_progress": True,
+            "detect_loop": True,
+            "loop_consecutive_threshold": 0,
+        }
+
+    edit_manifest(run_dir, break_spec)
+    _, report = replay(run_dir)
+    assert any("verification_spec malformed" in e for e in report.errors)
+    assert report.semantic_valid is False
+    assert report.overall_valid is False
+
+
+def test_m5_partial_verification_spec_fails_closed(tmp_path):
+    run_dir = build_run(tmp_path)
+
+    def break_spec(manifest):
+        # missing detect_loop and loop_consecutive_threshold: no silent
+        # default guessing allowed
+        manifest["verification_spec"] = {
+            "implementation": "DefaultStepVerifier",
+            "detect_no_progress": True,
+        }
+
+    edit_manifest(run_dir, break_spec)
+    _, report = replay(run_dir)
+    assert any("verification_spec malformed" in e for e in report.errors)
+    assert report.semantic_valid is False
+    assert report.overall_valid is False
+
+
+def test_m6_custom_detector_composition_never_rebuilt_as_standard(tmp_path):
+    from web_harness.reliability.detectors.action_error import ActionErrorDetector
+
+    run_dir = build_run(
+        tmp_path, verifier=DefaultStepVerifier(detectors=[ActionErrorDetector()])
+    )
+    # the recorded spec must NOT look like the rebuildable standard spec
+    manifest = json.loads(
+        (run_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    spec = manifest["verification_spec"]
+    assert spec["implementation"] != "DefaultStepVerifier"
+    assert spec["rebuildable"] is False
+
+    _, report = replay(run_dir)
+    # semantic replay reports the unsupported spec instead of silently
+    # rebuilding the standard composition (which would produce different
+    # signals than the live run recorded)
+    assert any(
+        "not rebuildable offline" in e or "verification_spec malformed" in e
+        for e in report.errors
+    )
+    assert report.replayed_verifications == 0
+    assert report.semantic_valid is False
+    assert report.overall_valid is False
+
+
+def test_cli_missing_required_input_exits_one(tmp_path):
+    run_dir = build_run(tmp_path)
+
+    def drop_ref(record):
+        del record["observation_json_ref"]
+
+    edit_jsonl(run_dir / "steps.jsonl", 0, drop_ref)
+    result = run_cli(tmp_path, run_dir.name)
+    assert result.exit_code == 1
+    assert "Semantic validation: INVALID" in result.output
+
+
+def test_cli_malformed_verifier_spec_exits_one(tmp_path):
+    run_dir = build_run(tmp_path)
+
+    def break_spec(manifest):
+        manifest["verification_spec"] = {
+            "implementation": "DefaultStepVerifier",
+            "detect_no_progress": True,
+            "detect_loop": "false",
+            "loop_consecutive_threshold": 2,
+        }
+
+    edit_manifest(run_dir, break_spec)
+    result = run_cli(tmp_path, run_dir.name)
+    assert result.exit_code == 1

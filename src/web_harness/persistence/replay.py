@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from web_harness.core.events import RuntimeEvent, RuntimeEventType
 from web_harness.core.models import EnvironmentStep, Observation, RunResult, StepRecord, TaskSpec
@@ -52,6 +52,25 @@ _ARTIFACT_REF_FIELDS = (
     "prompt_ref",
     "model_response_ref",
 )
+
+REBUILDABLE_VERIFIER_IMPLEMENTATION = "DefaultStepVerifier"
+
+
+class VerifierSpec(BaseModel):
+    """Strict verification_spec contract (Phase 2A1 closure).
+
+    Strict typing on purpose: no Python truthiness, no silent coercion, no
+    default guessing. `"false"` is not a bool, `"2"` is not a threshold, a
+    missing field is malformed — every deviation is a structured replay
+    error instead of a fallback to defaults.
+    """
+
+    model_config = ConfigDict(strict=True)
+
+    implementation: str
+    detect_no_progress: bool
+    detect_loop: bool
+    loop_consecutive_threshold: int = Field(ge=1)
 
 
 class TraceBundle(BaseModel):
@@ -450,7 +469,16 @@ class TraceReplayEngine:
                 f"semantic replay"
             )
             return
-        verifier = self._verifier or self._verifier_from_spec(bundle.manifest)
+        if self._verifier is not None:
+            # explicitly injected verifier (programmatic use / tests)
+            verifier, spec_error = self._verifier, None
+        else:
+            verifier, spec_error = self._verifier_from_spec(bundle.manifest)
+        if spec_error is not None:
+            # the manifest HAS a verification_spec but it cannot be safely
+            # rebuilt: fail closed (never replay against guessed defaults)
+            report.errors.append(spec_error)
+            return
         if verifier is None:
             report.semantic_replay_skipped = True
             if any(
@@ -459,8 +487,8 @@ class TraceReplayEngine:
             ):
                 report.notes.append(
                     "semantic replay skipped: verification events present "
-                    "but the manifest has no rebuildable verifier spec — "
-                    "refusing to replay against default settings"
+                    "but the manifest has no verifier spec — refusing to "
+                    "replay against default settings"
                 )
             return
         task = self._task_of(bundle)
@@ -485,14 +513,22 @@ class TraceReplayEngine:
             event = verification_events.get(step.step_index)
             if event is None:
                 continue
-            if not (
-                step.observation_json_ref
-                and step.next_observation_json_ref
-                and step.action
-            ):
-                report.notes.append(
-                    f"semantic replay skipped for step {step.step_index}: "
-                    "missing structured observation artifacts or action"
+            missing_inputs = [
+                field
+                for field, value in (
+                    ("observation_json_ref", step.observation_json_ref),
+                    ("next_observation_json_ref", step.next_observation_json_ref),
+                    ("action", step.action),
+                )
+                if not value
+            ]
+            if missing_inputs:
+                # for a v2 verified step these are REQUIRED semantic replay
+                # inputs: their absence is a replay error, not a skip note
+                report.errors.append(
+                    f"semantic replay cannot run for step "
+                    f"{step.step_index}: missing required input(s): "
+                    f"{', '.join(missing_inputs)}"
                 )
                 continue
             try:
@@ -529,25 +565,55 @@ class TraceReplayEngine:
                 report.verification_mismatches.append(mismatch)
 
     @staticmethod
-    def _verifier_from_spec(manifest: dict):
-        """Rebuild the recorded effective verifier from manifest provenance.
+    def _verifier_from_spec(manifest: dict) -> tuple[object, str | None]:
+        """Resolve the recorded verifier spec from manifest provenance.
 
-        Returns None when the spec is absent or names an implementation this
-        harness cannot rebuild offline (never guesses defaults).
+        Returns (verifier, error):
+
+        - (None, None): no verification_spec in the manifest — the caller
+          decides (semantic replay skips with a note for verified traces);
+        - (verifier, None): spec strictly valid for the standard built-in
+          composition;
+        - (None, error): the manifest HAS a spec but it is malformed, uses
+          wrong types, misses required fields, or names an implementation
+          that cannot be rebuilt offline — never guessed, never coerced.
         """
+        if "verification_spec" not in manifest:
+            return None, None
         spec = manifest.get("verification_spec")
+        if spec is None:
+            return None, None
         if not isinstance(spec, dict):
-            return None
-        if spec.get("implementation") != "DefaultStepVerifier":
-            return None
+            return (
+                None,
+                f"verification_spec malformed: expected an object, got "
+                f"{type(spec).__name__}",
+            )
+        try:
+            parsed = VerifierSpec.model_validate(spec, strict=True)
+        except ValidationError as exc:
+            return (
+                None,
+                f"verification_spec malformed (fail-closed, no defaults "
+                f"applied): {exc.errors(include_url=False)}",
+            )
+        if parsed.implementation != REBUILDABLE_VERIFIER_IMPLEMENTATION:
+            return (
+                None,
+                f"verification_spec implementation {parsed.implementation!r} "
+                f"is not rebuildable offline (supported: "
+                f"{REBUILDABLE_VERIFIER_IMPLEMENTATION!r} with the standard "
+                f"detector composition); semantic replay refuses to guess",
+            )
         from web_harness.reliability.verifier import DefaultStepVerifier
 
-        return DefaultStepVerifier(
-            detect_no_progress=bool(spec.get("detect_no_progress", True)),
-            detect_loop=bool(spec.get("detect_loop", True)),
-            loop_consecutive_threshold=int(
-                spec.get("loop_consecutive_threshold", 2)
+        return (
+            DefaultStepVerifier(
+                detect_no_progress=parsed.detect_no_progress,
+                detect_loop=parsed.detect_loop,
+                loop_consecutive_threshold=parsed.loop_consecutive_threshold,
             ),
+            None,
         )
 
     @staticmethod

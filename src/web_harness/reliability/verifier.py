@@ -91,6 +91,7 @@ class DefaultStepVerifier:
                 TaskFailureDetector,
             )
 
+            custom_composition = False
             detectors = [
                 ActionErrorDetector(),
                 ObservationHealthDetector(),
@@ -100,7 +101,13 @@ class DefaultStepVerifier:
                 else None,
                 TaskFailureDetector(),
             ]
+        else:
+            custom_composition = True
         self.detectors = [d for d in detectors if d is not None]
+        # whether a custom detector composition was injected: such a verifier
+        # must NOT publish a spec that looks like the rebuildable standard
+        # composition (Phase 2A1 closure: offline replay must not guess)
+        self._custom_detector_composition = custom_composition
         # effective behavior (Phase 2A1): persisted into the run manifest so
         # offline semantic replay can rebuild the verifier the live run used
         self.detect_no_progress = detect_no_progress
@@ -108,7 +115,18 @@ class DefaultStepVerifier:
         self.loop_consecutive_threshold = loop_consecutive_threshold
 
     def spec(self) -> dict:
-        """Recorded effective verifier specification for trace provenance."""
+        """Recorded effective verifier specification for trace provenance.
+
+        Only the standard built-in detector composition publishes a
+        rebuildable spec; a custom composition is marked unsupported so
+        semantic replay reports it instead of silently rebuilding it as the
+        standard verifier.
+        """
+        if self._custom_detector_composition:
+            return {
+                "implementation": "custom_detector_composition",
+                "rebuildable": False,
+            }
         return {
             "implementation": "DefaultStepVerifier",
             "detect_no_progress": self.detect_no_progress,
