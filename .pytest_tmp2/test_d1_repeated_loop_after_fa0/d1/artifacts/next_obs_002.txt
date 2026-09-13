@@ -1,0 +1,20 @@
+# goal
+fake goal
+
+# url
+http://fake.local/start
+
+# open_pages
+http://fake.local/start
+
+# last_action
+click(bid='2')
+
+# last_action_error
+
+
+# truncated
+False
+
+# axtree
+[1] button 'Go'

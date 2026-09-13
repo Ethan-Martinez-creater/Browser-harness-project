@@ -37,6 +37,29 @@ def episode_metrics(result: RunResult) -> dict:
         "recovery_environment_actions": result.recovery_environment_actions,
         "recovery_latency_s": round(result.recovery_latency_s, 3),
         "blocked_action_redecision_count": result.blocked_action_redecision_count,
+        "replan_count": result.replan_count,
+        "replan_success_count": result.replan_success_count,
+        "replan_failed_count": result.replan_failed_count,
+        "replan_unresolved_count": result.replan_unresolved_count,
+        "replan_model_calls": result.replan_model_calls,
+        "replan_input_tokens": result.replan_input_tokens,
+        "replan_output_tokens": result.replan_output_tokens,
+        "replan_latency_s": round(result.replan_latency_s, 3),
+        "reliability_extra_model_calls": (
+            result.extra_model_calls + result.replan_model_calls
+        ),
+        "reliability_extra_tokens": (
+            result.retry_input_tokens
+            + result.retry_output_tokens
+            + result.replan_input_tokens
+            + result.replan_output_tokens
+        ),
+        "reliability_extra_latency_s": round(
+            result.retry_latency_s
+            + result.recovery_latency_s
+            + result.replan_latency_s,
+            3,
+        ),
         "retry_count": result.retry_count,
         "retry_cycle_count": result.retry_cycle_count,
         "retry_success_count": result.retry_success_count,

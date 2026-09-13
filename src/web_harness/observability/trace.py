@@ -95,9 +95,12 @@ class TraceRecorder:
         input_tokens: int | None,
         output_tokens: int | None,
         model_name: str | None = None,
+        component: str = "decision",
     ) -> str | None:
         """Persist one failed model attempt as a deterministic artifact (R4).
 
+        `component` namespaces the file so decision-cycle and replan-cycle
+        attempts on the same step never overwrite each other (closure B4).
         Returns the artifact reference (relative to the run dir) so retry
         events can point at it, or None when there is nothing to store.
         steps.jsonl one-step semantics are untouched.
@@ -105,7 +108,8 @@ class TraceRecorder:
         if not raw_text:
             return None
         pad_step = f"{step_index:03d}" if step_index is not None else "xxx"
-        ref = f"artifacts/attempt_{pad_step}_{attempt_index:02d}.json"
+        prefix = "attempt" if component == "decision" else f"{component}_attempt"
+        ref = f"artifacts/{prefix}_{pad_step}_{attempt_index:02d}.json"
         _write_json(
             self.run_dir / ref,
             {

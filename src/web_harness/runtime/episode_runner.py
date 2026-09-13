@@ -1055,8 +1055,10 @@ class EpisodeRunner:
             started_at=started_at,
             ended_at=now_utc_iso(),
             duration_s=duration,
-            input_tokens=state.input_tokens,
-            output_tokens=state.output_tokens,
+            # episode total tokens = agent decision-path tokens + Replanner
+            # tokens (closure B2); the retry/replan breakdown stays separate
+            input_tokens=state.input_tokens + replan_input_tokens,
+            output_tokens=state.output_tokens + replan_output_tokens,
             action_error_count=state.action_error_count,
             trace_path=str(run_dir),
             error_type=error_type,

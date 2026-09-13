@@ -1,0 +1,15 @@
+{
+  "run_id": "d1",
+  "timestamp": "2026-09-13T03:47:55Z",
+  "git_commit": "30c687e6573081e050f6b410826e7cac6904af60",
+  "config_hash": null,
+  "python_version": "3.11.16",
+  "platform": "Windows-10-10.0.19045-SP0",
+  "model_provider": null,
+  "model_name": null,
+  "benchmark": "fake",
+  "task_id": "t",
+  "seed": 0,
+  "max_steps": 8,
+  "environment_bootstrap_action": null
+}

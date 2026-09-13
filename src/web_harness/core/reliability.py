@@ -99,6 +99,20 @@ class RecoveryPlan(BaseModel):
             raise ValueError("RecoveryPlan.strategy_steps is limited to 4")
         return value
 
+    @field_validator("diagnosis", "immediate_subgoal")
+    @classmethod
+    def _non_empty_fields(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("RecoveryPlan fields must be non-empty")
+        return value
+
+    @field_validator("horizon_steps")
+    @classmethod
+    def _positive_horizon(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("RecoveryPlan.horizon_steps must be >= 1")
+        return value
+
 
 class ReliabilityState(BaseModel):
     """Reliability bookkeeping for one episode, kept inside RunState."""

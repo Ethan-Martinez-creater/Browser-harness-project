@@ -43,6 +43,7 @@ from web_harness.core.reliability import (
     ReliabilityState,
 )
 from web_harness.env.action_contract import ActionContract
+from web_harness.reliability.budget import episode_budget_exhausted
 from web_harness.reliability.retry import RetryPolicy
 
 _JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
@@ -52,6 +53,14 @@ _REPLAN_SYSTEM = (
     "You are NOT completing the task yourself. You only produce a SHORT "
     "term RecoveryPlan describing how the reactive agent should escape a "
     "persistent failure. Respond with the JSON object only."
+)
+
+REPLAN_FORMAT_CORRECTION = (
+    "# Format correction\n"
+    "Previous response did not match the required RecoveryPlan JSON "
+    "schema.\n"
+    "Return exactly one valid JSON object matching the schema.\n"
+    "Do not add markdown fences or extra prose."
 )
 
 _OUTPUT_CONTRACT = (
@@ -203,8 +212,9 @@ class ReplanExecutor:
             reliability_state=state,
             budget=self.budget,
         )
-        if decision.retry:
-            state.extra_model_calls += 1
+        # NOTE: the global extra-model-call slot is consumed at the call
+        # site (before each real model call), so retries are NOT double
+        # counted here (closure B1)
         return decision
 
     def generate(
@@ -251,11 +261,34 @@ class ReplanExecutor:
         api_retry_count = 0
         parse_retry_count = 0
         attempt_index = 0
+        repair_feedback: str | None = None
         while True:
             started = time.monotonic()
+            # EVERY real replan model call occupies one global
+            # extra-model-call slot BEFORE it happens (closure B1); when the
+            # episode budget is exhausted no call is made at all
+            if episode_budget_exhausted(reliability_state, self.budget):
+                emit_replan_event(
+                    outcome="exhausted",
+                    reason="episode extra-model-call budget exhausted",
+                    error="BudgetExceeded",
+                )
+                result.error_type = ErrorType.BUDGET_EXCEEDED
+                result.error_message = (
+                    "episode extra-model-call budget exhausted before the "
+                    "replan model call"
+                )
+                return result
+            reliability_state.extra_model_calls += 1
+            effective_prompt = prompt
+            if repair_feedback:
+                effective_prompt = PromptBundle(
+                    system=prompt.system,
+                    user=prompt.user + "\n\n" + repair_feedback,
+                )
             try:
                 mo: ModelOutput = self.model_adapter.generate_structured(
-                    prompt=prompt,
+                    prompt=effective_prompt,
                 )
             except ModelApiError as exc:
                 result.attempts += 1
@@ -279,6 +312,7 @@ class ReplanExecutor:
                     )
                     result.latency_s += decision.backoff_ms / 1000.0
                     self.sleep(decision.backoff_ms / 1000.0)
+                    repair_feedback = None  # api retry reuses the base prompt
                     attempt_index += 1
                     continue
                 emit_replan_event(
@@ -304,6 +338,7 @@ class ReplanExecutor:
                         input_tokens=exc.input_tokens,
                         output_tokens=exc.output_tokens,
                         model_name=exc.model_name,
+                        component="replan",
                     )
                 decision = self._retry_decision(
                     result, FailureKind.MODEL_OUTPUT_INVALID,
@@ -318,6 +353,8 @@ class ReplanExecutor:
                         backoff_ms=0,
                         artifact_ref=artifact_ref,
                     )
+                    # a parse retry MUST use a real format-repair prompt (B3)
+                    repair_feedback = REPLAN_FORMAT_CORRECTION
                     attempt_index += 1
                     continue
                 emit_replan_event(
@@ -346,6 +383,7 @@ class ReplanExecutor:
                         input_tokens=mo.input_tokens,
                         output_tokens=mo.output_tokens,
                         model_name=mo.model_name,
+                        component="replan",
                     )
                 decision = self._retry_decision(
                     result, FailureKind.MODEL_OUTPUT_INVALID,
@@ -360,6 +398,8 @@ class ReplanExecutor:
                         backoff_ms=0,
                         artifact_ref=artifact_ref,
                     )
+                    # a parse retry MUST use a real format-repair prompt (B3)
+                    repair_feedback = REPLAN_FORMAT_CORRECTION
                     attempt_index += 1
                     continue
                 emit_replan_event(

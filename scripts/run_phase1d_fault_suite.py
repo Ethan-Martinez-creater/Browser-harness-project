@@ -32,6 +32,7 @@ from web_harness.reliability.replan_policy import ReplanTriggerPolicy
 from web_harness.reliability.replanner import ReplanExecutor
 from web_harness.reliability.retry import RetryPolicy
 from web_harness.reliability.verifier import DefaultStepVerifier
+from web_harness.runtime.decision_executor import DecisionExecutor
 from web_harness.runtime.episode_runner import EpisodeRunner
 
 RESET_OBS = make_fake_observation(url="http://fault.local/start")
@@ -59,8 +60,10 @@ class ScriptedStructuredModel:
     def __init__(self, plan_jsons):
         self.plan_jsons = list(plan_jsons)
         self.call_count = 0
+        self.prompts: list[str] = []
 
     def generate_structured(self, *, prompt):
+        self.prompts.append(prompt.user)
         item = self.plan_jsons[min(self.call_count, len(self.plan_jsons) - 1)]
         self.call_count += 1
         if isinstance(item, Exception):
@@ -94,6 +97,8 @@ def run_episode(
     replanning: bool = True,
     plan_jsons: list | None = None,
     api_max_retries: int = 1,
+    max_extra_model_calls: int = 6,
+    decision_parse_error_calls: tuple[int, ...] = (),
     tmp_root: Path,
 ):
     task = TaskSpec(benchmark="fake", task_id="fault", seed=0,
@@ -105,19 +110,40 @@ def run_episode(
         recovery_failures_before_replan=2,
         plan_horizon_steps=horizon,
         recent_steps=6,
+        max_extra_model_calls_per_episode=max_extra_model_calls,
     )
+    structured = ScriptedStructuredModel(
+        plan_jsons if plan_jsons is not None else [PLAN_JSON]
+    )
+    agent_model = MockModelAdapter(list(actions))
+    if decision_parse_error_calls:
+        from web_harness.evaluation.fault_injection import (
+            FaultInjectingModelAdapter,
+        )
+
+        agent_model = FaultInjectingModelAdapter(
+            MockModelAdapter(list(actions)),
+            parse_error_on_calls=set(decision_parse_error_calls),
+        )
     runner = EpisodeRunner(
-        agent=BaselineAgent(model_adapter=MockModelAdapter(list(actions))),
+        agent=BaselineAgent(model_adapter=agent_model),
         env=env,
         trace_root=tmp_root,
         verifier=DefaultStepVerifier(),
         failure_policy=FailurePolicyEngine(wait_ms=500),
         recovery_budget=budget,
+        decision_executor=DecisionExecutor(
+            retry_policy=RetryPolicy(
+                api_max_retries=api_max_retries,
+                api_backoff_ms=[0],
+                parse_max_retries=1,
+            ),
+            budget=budget,
+            sleep=lambda _s: None,
+        ),
         replan_trigger_policy=ReplanTriggerPolicy() if replanning else None,
         replan_executor=ReplanExecutor(
-            model_adapter=ScriptedStructuredModel(
-                plan_jsons if plan_jsons is not None else [PLAN_JSON]
-            ),
+            model_adapter=structured,
             retry_policy=RetryPolicy(
                 api_max_retries=api_max_retries,
                 api_backoff_ms=[0],
@@ -138,10 +164,10 @@ def run_episode(
         )
         attempt_types = [
             json.loads(a.read_text(encoding="utf-8")).get("failure_type")
-            for a in Path(result.trace_path).glob("artifacts/attempt_*.json")
+            for a in Path(result.trace_path).glob("artifacts/*attempt_*.json")
         ]
     return (result, env.wrapped.executed_actions, events, steps,
-            artifact_names, attempt_types)
+            artifact_names, attempt_types, structured.prompts)
 
 
 def outcomes(events, event_type):
@@ -181,7 +207,7 @@ def main() -> int:
         scenarios.append(data)
 
     # D1: repeated loop after failed recovery -> replan -> success
-    result, executed, events, steps, artifact_names, attempt_types = run_episode(
+    result, executed, events, steps, artifact_names, attempt_types, planner_prompts = run_episode(
         name="D1",
         script=[{}, {}, {}, {}, {}, {"observation": OBS_B},
                 {"reward": 1.0, "terminated": True, "observation": OBS_B}],
@@ -211,7 +237,7 @@ def main() -> int:
     )
 
     # D2: two consecutive recovery failures trigger replan (streak)
-    result, executed, events, steps, artifact_names, attempt_types = run_episode(
+    result, executed, events, steps, artifact_names, attempt_types, planner_prompts = run_episode(
         name="D2",
         script=[{}] * 7
         + [{"reward": 1.0, "terminated": True, "observation": OBS_B}],
@@ -241,7 +267,7 @@ def main() -> int:
     )
 
     # D3: replanning disabled -> no REPLAN anything (causal control)
-    result, executed, events, steps, artifact_names, attempt_types = run_episode(
+    result, executed, events, steps, artifact_names, attempt_types, planner_prompts = run_episode(
         name="D3",
         script=[{}, {}, {}, {}, {}, {"observation": OBS_B},
                 {"reward": 1.0, "terminated": True, "observation": OBS_B}],
@@ -266,7 +292,7 @@ def main() -> int:
     )
 
     # D4: replan budget exhausted does not kill execution
-    result, executed, events, steps, artifact_names, attempt_types = run_episode(
+    result, executed, events, steps, artifact_names, attempt_types, planner_prompts = run_episode(
         name="D4",
         script=[{}] * 9
         + [{"reward": 1.0, "terminated": True, "observation": OBS_B}],
@@ -293,7 +319,7 @@ def main() -> int:
     )
 
     # D5: plan horizon consumed only by real agent steps
-    result, executed, events, steps, artifact_names, attempt_types = run_episode(
+    result, executed, events, steps, artifact_names, attempt_types, planner_prompts = run_episode(
         name="D5",
         script=[{}] * 8
         + [{"reward": 1.0, "terminated": True, "observation": OBS_B}],
@@ -326,7 +352,7 @@ def main() -> int:
     )
 
     # D6: same trigger failure repeats under active plan -> replan FAILED
-    result, executed, events, steps, artifact_names, attempt_types = run_episode(
+    result, executed, events, steps, artifact_names, attempt_types, planner_prompts = run_episode(
         name="D6",
         script=[{}] * 7
         + [{"reward": 1.0, "terminated": True, "observation": OBS_B}],
@@ -353,7 +379,7 @@ def main() -> int:
     )
 
     # D7: replan generation parse repair
-    result, executed, events, steps, artifact_names, attempt_types = run_episode(
+    result, executed, events, steps, artifact_names, attempt_types, planner_prompts = run_episode(
         name="D7",
         script=[{}, {}, {}, {}, {}, {"observation": OBS_B},
                 {"reward": 1.0, "terminated": True, "observation": OBS_B}],
@@ -376,6 +402,158 @@ def main() -> int:
             "failed_attempt_artifact": any(
                 t == "REPLAN_OUTPUT_PARSE_ERROR" for t in attempt_types
             ),
+            "repair_prompt_used": len(planner_prompts) == 2
+            and "# Format correction" not in planner_prompts[0]
+            and "# Format correction" in planner_prompts[1],
+            "replan_invariant": replan_invariant(result),
+        },
+        replan_count=result.replan_count,
+        replan_model_calls=result.replan_model_calls,
+    )
+
+    # D11: budget=0 blocks the initial replan call
+    result, executed, events, steps, artifact_names, attempt_types, \
+        planner_prompts = run_episode(
+        name="D11",
+        script=[{}] * 6
+        + [{"reward": 1.0, "terminated": True, "observation": OBS_B}],
+        actions=["click(bid='1')", "click(bid='1')", "click(bid='2')",
+                 "click(bid='1')", "click(bid='1')", "click(bid='3')",
+                 "click(bid='9')"],
+        max_extra_model_calls=0,
+        tmp_root=out_dir,
+    )
+    add(
+        "D11 global budget=0 blocks the initial replan call",
+        "trigger fires but zero planner model calls happen; execution falls "
+        "back to Phase 1C recovery",
+        {
+            "replan_count_is_1": result.replan_count == 1,
+            "zero_planner_calls": result.replan_model_calls == 0,
+            "replan_failed_is_1": result.replan_failed_count == 1,
+            "no_replan_prompt_sent": len(planner_prompts) == 0,
+            "replan_invariant": replan_invariant(result),
+        },
+        replan_count=result.replan_count,
+        replan_model_calls=result.replan_model_calls,
+    )
+
+    # D12: planner initial call consumes budget before parse retry
+    result, executed, events, steps, artifact_names, attempt_types, \
+        planner_prompts = run_episode(
+        name="D12",
+        script=[{}] * 6
+        + [{"reward": 1.0, "terminated": True, "observation": OBS_B}],
+        actions=["click(bid='1')", "click(bid='1')", "click(bid='2')",
+                 "click(bid='1')", "click(bid='1')", "click(bid='3')",
+                 "click(bid='9')"],
+        max_extra_model_calls=1,
+        plan_jsons=["not json at all", PLAN_JSON],
+        tmp_root=out_dir,
+    )
+    add(
+        "D12 planner initial call consumes budget before parse retry",
+        "with budget=1 the initial call runs but the parse repair cannot",
+        {
+            "replan_count_is_1": result.replan_count == 1,
+            "model_calls_is_1": result.replan_model_calls == 1,
+            "replan_failed_is_1": result.replan_failed_count == 1,
+            "replan_invariant": replan_invariant(result),
+        },
+        replan_count=result.replan_count,
+        replan_model_calls=result.replan_model_calls,
+    )
+
+    # D13: replan parse repair prompt actually changes
+    result, executed, events, steps, artifact_names, attempt_types, \
+        planner_prompts = run_episode(
+        name="D13",
+        script=[{}, {}, {}, {}, {}, {"observation": OBS_B},
+                {"reward": 1.0, "terminated": True, "observation": OBS_B}],
+        actions=["click(bid='1')", "click(bid='1')", "click(bid='2')",
+                 "click(bid='1')", "click(bid='1')", "click(bid='3')",
+                 "click(bid='9')"],
+        plan_jsons=["bad replan json", PLAN_JSON],
+        tmp_root=out_dir,
+    )
+    add(
+        "D13 replan parse repair prompt actually changes",
+        "the second planner call carries the typed format-repair section",
+        {
+            "two_prompts": len(planner_prompts) == 2,
+            "first_prompt_clean": planner_prompts
+            and "# Format correction" not in planner_prompts[0],
+            "second_prompt_has_repair": planner_prompts
+            and "# Format correction" in planner_prompts[1],
+            "replan_success": result.replan_success_count == 1,
+            "replan_invariant": replan_invariant(result),
+        },
+        replan_count=result.replan_count,
+    )
+
+    # D14: decision + replan failed attempts on the same step do not collide
+    result, executed, events, steps, artifact_names, attempt_types, \
+        planner_prompts = run_episode(
+        name="D14",
+        script=[{}, {}, {}, {}, {}, {"observation": OBS_B},
+                {"reward": 1.0, "terminated": True, "observation": OBS_B}],
+        actions=["click(bid='1')", "click(bid='1')", "click(bid='2')",
+                 "click(bid='1')", "click(bid='1')", "click(bid='3')",
+                 "click(bid='9')"],
+        decision_parse_error_calls=(0,),
+        plan_jsons=["bad replan json", PLAN_JSON],
+        tmp_root=out_dir,
+    )
+    add(
+        "D14 decision+replan attempt artifacts do not collide",
+        "same-step decision and replan parse failures produce two distinct "
+        "artifacts with correct event refs",
+        {
+            "decision_artifact_present": any(
+                n.startswith("attempt_") for n in artifact_names
+            ),
+            "replan_artifact_present": any(
+                n.startswith("replan_attempt_") for n in artifact_names
+            ),
+            "both_parse_failures_recorded": attempt_types.count(
+                "REPLAN_OUTPUT_PARSE_ERROR"
+            )
+            >= 1
+            and any(t == "MODEL_OUTPUT_PARSE_ERROR" for t in attempt_types),
+            "success": result.success,
+        },
+        replan_count=result.replan_count,
+    )
+
+    # D15: empty plan fields go through structured parse repair
+    result, executed, events, steps, artifact_names, attempt_types, \
+        planner_prompts = run_episode(
+        name="D15",
+        script=[{}, {}, {}, {}, {}, {"observation": OBS_B},
+                {"reward": 1.0, "terminated": True, "observation": OBS_B}],
+        actions=["click(bid='1')", "click(bid='1')", "click(bid='2')",
+                 "click(bid='1')", "click(bid='1')", "click(bid='3')",
+                 "click(bid='9')"],
+        plan_jsons=[
+            json.dumps({
+                "diagnosis": "",
+                "immediate_subgoal": "   ",
+                "strategy_steps": [],
+                "horizon_steps": 0,
+            }),
+            PLAN_JSON,
+        ],
+        tmp_root=out_dir,
+    )
+    add(
+        "D15 invalid plan fields go through parse repair",
+        "empty diagnosis/subgoal or horizon<1 fails validation and the "
+        "repair retry produces a valid plan",
+        {
+            "model_calls_is_2": result.replan_model_calls == 2,
+            "replan_success_is_1": result.replan_success_count == 1,
+            "repair_prompt_used": len(planner_prompts) == 2
+            and "# Format correction" in planner_prompts[1],
             "replan_invariant": replan_invariant(result),
         },
         replan_count=result.replan_count,
@@ -383,7 +561,7 @@ def main() -> int:
     )
 
     # D8a: transient API failure then success
-    result, executed, events, steps, artifact_names, attempt_types = run_episode(
+    result, executed, events, steps, artifact_names, attempt_types, planner_prompts = run_episode(
         name="D8a",
         script=[{}, {}, {}, {}, {}, {"observation": OBS_B},
                 {"reward": 1.0, "terminated": True, "observation": OBS_B}],
@@ -407,7 +585,7 @@ def main() -> int:
     )
 
     # D8b: persistent API failure -> generation failed -> fallback recovery
-    result, executed, events, steps, artifact_names, attempt_types = run_episode(
+    result, executed, events, steps, artifact_names, attempt_types, planner_prompts = run_episode(
         name="D8b",
         script=[{}] * 6
         + [{"reward": 1.0, "terminated": True, "observation": OBS_B}],
@@ -437,7 +615,7 @@ def main() -> int:
     )
 
     # D9: terminal task never replans
-    result, executed, events, steps, artifact_names, attempt_types = run_episode(
+    result, executed, events, steps, artifact_names, attempt_types, planner_prompts = run_episode(
         name="D9",
         script=[{"terminated": True, "reward": 0.0}],
         actions=["click(bid='1')", "click(bid='2')"],
@@ -455,7 +633,7 @@ def main() -> int:
     )
 
     # D10: unresolved recovery is neutral for the streak
-    result, executed, events, steps, artifact_names, attempt_types = run_episode(
+    result, executed, events, steps, artifact_names, attempt_types, planner_prompts = run_episode(
         name="D10",
         script=[{}, {}],
         actions=["click(bid='1')", "click(bid='1')"],

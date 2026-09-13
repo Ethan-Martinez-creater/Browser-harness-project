@@ -1,0 +1,59 @@
+# system
+You are a careful web automation agent. You complete the given task by choosing exactly one browser action at a time, based on the current accessibility tree. Prefer the simplest action that makes progress toward the goal.
+
+You control the browser with ONE action per step.
+Available actions (use exactly these signatures):
+
+  click(bid: str)
+      Click the element with the given bid.
+      e.g. click(bid='1')
+  noop(wait_ms: float = 1000)
+      Do nothing for a short wait.
+      e.g. noop()
+
+Element references (`bid`) are the bracketed ids in the
+accessibility tree, e.g. `[42] button 'OK'` refers to the
+element you would target with its id '42'.
+
+Respond with ONE JSON object and nothing else:
+
+{"action": "<one action from the list above>", "short_reason": "<max ~15 words, why>"}
+
+The `action` value must be ONE complete, executable action call copied from
+the list above, with ALL of its required arguments inline (an element action
+must include the target element id directly in the call). Never split
+arguments into separate JSON fields, and never output a bare action name.
+
+# user
+# Task goal
+fake goal
+
+# Current URL
+http://fake.local/B
+
+# Open pages
+http://fake.local/B
+
+# Last action
+click(bid='3')
+# Last action error
+(none)
+
+# Recent history (last 4 steps)
+step 2: action=click(bid='2'); reward=0
+step 3: action=click(bid='1'); reward=0
+step 4: action=click(bid='1'); reward=0
+step 5: action=click(bid='3'); reward=0
+
+# Current page accessibility tree
+[1] button 'Go'
+
+Choose the next action now. Respond with the JSON object only.
+
+# Recovery plan
+Immediate subgoal: Find an alternative control that advances the task.
+Strategy:
+1. Inspect nearby interactive elements.
+2. Choose an alternative control.
+3. Confirm the page state changes.
+Avoid (advisory): click(bid='1')

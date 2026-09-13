@@ -1,0 +1,25 @@
+{
+  "replan_index": 1,
+  "plan": {
+    "diagnosis": "Repeated interaction with the same control is not changing the page.",
+    "immediate_subgoal": "Find an alternative control that advances the task.",
+    "strategy_steps": [
+      "Inspect nearby interactive elements.",
+      "Choose an alternative control.",
+      "Confirm the page state changes."
+    ],
+    "avoid_actions": [
+      "click(bid='1')"
+    ],
+    "horizon_steps": 3,
+    "created_at_step": 4
+  },
+  "trigger_reason": "repeated_loop_after_recovery",
+  "failure_kind": "LOOP_DETECTED",
+  "failure_signature": "no_progress:e3b819b3649609ce",
+  "recovery_failure_streak": 1,
+  "model_calls": 1,
+  "input_tokens": 50,
+  "output_tokens": 20,
+  "latency_s": 0.0
+}

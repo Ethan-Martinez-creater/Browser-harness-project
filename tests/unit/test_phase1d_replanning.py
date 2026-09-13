@@ -452,7 +452,9 @@ def test_d7_replan_parse_repair(tmp_path):
     assert result.replan_success_count == 1
     assert result.replan_input_tokens >= 100  # failed attempt usage retained
     assert_replan_outcome_invariant(result)
-    artifacts = list(Path(result.trace_path).glob("artifacts/attempt_*.json"))
+    artifacts = list(
+        Path(result.trace_path).glob("artifacts/*attempt_*.json")
+    )
     assert any(
         json.loads(a.read_text(encoding="utf-8"))["failure_type"]
         == "REPLAN_OUTPUT_PARSE_ERROR"

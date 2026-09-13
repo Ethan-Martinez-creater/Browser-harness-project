@@ -14,6 +14,11 @@ These results are NOT mixed with natural MiniWoB success rates.
 | D5 plan horizon expires | PASS | - | 1 | 0 |
 | D6 same failure repeats under active plan | PASS | - | 1 | 0 |
 | D7 replan generation parse repair | PASS | - | 1 | 2 |
+| D11 global budget=0 blocks the initial replan call | PASS | - | 1 | 0 |
+| D12 planner initial call consumes budget before parse retry | PASS | - | 1 | 1 |
+| D13 replan parse repair prompt actually changes | PASS | - | 1 | 0 |
+| D14 decision+replan attempt artifacts do not collide | PASS | - | 1 | 0 |
+| D15 invalid plan fields go through parse repair | PASS | - | 1 | 2 |
 | D8a transient API failure retries then succeeds | PASS | - | 1 | 0 |
 | D8b persistent replan API failure falls back | PASS | - | 1 | 0 |
 | D9 terminal task never replans | PASS | - | 0 | 0 |

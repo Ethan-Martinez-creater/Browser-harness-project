@@ -103,6 +103,77 @@
         "replan_success": true,
         "tokens_retained": true,
         "failed_attempt_artifact": true,
+        "repair_prompt_used": true,
+        "replan_invariant": true
+      },
+      "replan_count": 1,
+      "replan_model_calls": 2,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D11 global budget=0 blocks the initial replan call",
+      "expected": "trigger fires but zero planner model calls happen; execution falls back to Phase 1C recovery",
+      "assertions": {
+        "replan_count_is_1": true,
+        "zero_planner_calls": true,
+        "replan_failed_is_1": true,
+        "no_replan_prompt_sent": true,
+        "replan_invariant": true
+      },
+      "replan_count": 1,
+      "replan_model_calls": 0,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D12 planner initial call consumes budget before parse retry",
+      "expected": "with budget=1 the initial call runs but the parse repair cannot",
+      "assertions": {
+        "replan_count_is_1": true,
+        "model_calls_is_1": true,
+        "replan_failed_is_1": true,
+        "replan_invariant": true
+      },
+      "replan_count": 1,
+      "replan_model_calls": 1,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D13 replan parse repair prompt actually changes",
+      "expected": "the second planner call carries the typed format-repair section",
+      "assertions": {
+        "two_prompts": true,
+        "first_prompt_clean": true,
+        "second_prompt_has_repair": true,
+        "replan_success": true,
+        "replan_invariant": true
+      },
+      "replan_count": 1,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D14 decision+replan attempt artifacts do not collide",
+      "expected": "same-step decision and replan parse failures produce two distinct artifacts with correct event refs",
+      "assertions": {
+        "decision_artifact_present": true,
+        "replan_artifact_present": true,
+        "both_parse_failures_recorded": true,
+        "success": true
+      },
+      "replan_count": 1,
+      "pass": true,
+      "failed_assertions": []
+    },
+    {
+      "scenario": "D15 invalid plan fields go through parse repair",
+      "expected": "empty diagnosis/subgoal or horizon<1 fails validation and the repair retry produces a valid plan",
+      "assertions": {
+        "model_calls_is_2": true,
+        "replan_success_is_1": true,
+        "repair_prompt_used": true,
         "replan_invariant": true
       },
       "replan_count": 1,
