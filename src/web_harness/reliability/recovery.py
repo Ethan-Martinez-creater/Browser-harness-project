@@ -39,8 +39,18 @@ class RecoveryResult(BaseModel):
 
 
 class RecoveryManager:
-    def __init__(self, *, event_sink: Callable[[dict], None] | None = None):
+    def __init__(
+        self,
+        *,
+        event_sink: Callable[[dict], None] | None = None,
+        op_sink: Callable[[str, EnvironmentStep], None] | None = None,
+    ):
         self.event_sink = event_sink or (lambda event: None)
+        # Phase 2A2: receives (action, env_step) for every REAL recovery
+        # environment operation, immediately after env.step returns, so the
+        # operation lands in the durable environment journal before any
+        # verification/checkpoint work continues.
+        self.op_sink = op_sink
 
     def _emit(self, *, step_index, outcome: str, data: dict) -> None:
         self.event_sink(
@@ -104,6 +114,8 @@ class RecoveryManager:
             wait_ms = 500 if directive.wait_ms is None else directive.wait_ms
             action = f"noop(wait_ms={wait_ms})"
             env_step = env.step(action)
+            if self.op_sink is not None:
+                self.op_sink(action, env_step)
             latency = time.monotonic() - started
             self._emit(
                 step_index=step_index,

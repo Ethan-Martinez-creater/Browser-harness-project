@@ -27,6 +27,7 @@ class RuntimeEventType(StrEnum):
     RECOVERY = "recovery"
     REPLAN = "replan"
     BUDGET = "budget"
+    CHECKPOINT = "checkpoint"
 
 
 class RuntimeEvent(BaseModel):

@@ -21,9 +21,14 @@ later checkpoint/verification work.
 
 ```text
 runs/<run_id>/
-  manifest.json        run provenance (incl. trace_schema_version)
-  steps.jsonl          one StepRecord per line, fsynced after every step
-  result.json          final RunResult
+  manifest.json          run provenance (incl. trace_schema_version)
+  steps.jsonl            one StepRecord per line, fsynced after every step
+  result.json            final RunResult
+  events.jsonl           reliability event stream (fsynced)
+  environment_ops.jsonl  Phase 2A2: one record per REAL env.step, fsynced
+  checkpoints/           Phase 2A2 (only when persistence.checkpoint.enabled)
+    cp_NNNNNN.json       atomic CheckpointEnvelope snapshots (safe points)
+    latest.json          atomic pointer to the most recent checkpoint
   artifacts/
     obs_000.txt        PRE-action observation (the model's decision input)
     obs_000.json       structured Observation JSON twin (v2, additive)
@@ -40,6 +45,56 @@ Artifact names are deterministic (zero-padded step index). The `.json`
 observation twins are written by `TraceRecorder.record_step` from
 `Observation.model_dump(mode="json")` — the same normalized observation the
 agent actually decided on, in machine-readable form.
+
+## Environment operation journal (Phase 2A2)
+
+`environment_ops.jsonl` records every REAL `EnvironmentAdapter.step()` call
+in durable order (append + fsync immediately after the step returns, before
+verification/checkpoint work):
+
+| Field | Type | Notes |
+|---|---|---|
+| schema_version | int | 1 |
+| run_id | str | |
+| op_index | int | monotonic over the whole run, 0-based |
+| source_step_index | int? | agent step this operation belongs to |
+| kind | str | `agent_action` / `recovery_action` |
+| action | str | executed action string |
+| expected_post_fingerprint | str | fingerprint of the resulting observation |
+| reward / terminated / truncated | | real environment result |
+| action_error_signature | str? | normalized error signature |
+
+Recorded: agent actions and Harness recovery environment actions (e.g.
+WAIT_AND_REOBSERVE noop). NOT recorded (they never touch the environment):
+model retries, blocked-action re-decisions, verifier/policy runs, replanner
+model calls. MiniWoB bootstrap runs inside `env.reset()` and is deliberately
+not journaled (a future reconstruction re-executes it via `reset()`).
+
+## Checkpoints (Phase 2A2)
+
+When `persistence.checkpoint.enabled: true`, `EpisodeRunner` writes an
+atomic `CheckpointEnvelope` at every **stable safe point** (no model call
+or env.step in flight, step record/events/journal already fsynced,
+observation matches the live environment, next agent decision not started):
+
+```text
+next_step_index = the step at which the next agent decision will START
+```
+
+The envelope carries the full serializable `RunState` (including
+`EpisodeCounters` — the single authoritative episode accounting — and the
+complete `ReliabilityState`: active directive, active RecoveryPlan with
+remaining horizon, pending recovery/replan evaluations), the task, trace
+offsets (`step_count` / `event_count` / `environment_op_count`), the
+current environment fingerprint, the `action_contract_hash` (SHA256 of the
+ActionContract canonical JSON) and the declared
+`environment_resume_strategy` (`deterministic_replay` for MiniWoB
+BrowserGymAdapter / FakeEnvironment, `unsupported` for everything else).
+Writes are atomic (`write .tmp -> fsync -> os.replace`); orphan `.tmp`
+files are never valid checkpoints. Checkpoint events in `events.jsonl`
+record only `checkpoint_id`, `next_step_index` and `environment_op_count`.
+No secrets ever enter checkpoints (enforced by the sentinel test).
+Phase 2A2 persists state only — nothing here resumes.
 
 ## Step trace semantics
 

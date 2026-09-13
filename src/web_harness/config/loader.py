@@ -80,8 +80,26 @@ class HarnessConfig:
             self.trace = data.get("trace", {})
             self.environment = data.get("environment", {})
             self.reliability = data.get("reliability", {})
+            self.persistence = data.get("persistence", {})
         except KeyError as exc:
             raise ConfigError(f"missing config section: {exc}") from exc
+
+        if not isinstance(self.persistence, dict):
+            raise ConfigError("persistence config must be a mapping")
+        checkpoint_cfg = self.persistence.get("checkpoint") or {}
+        if checkpoint_cfg:
+            enabled = checkpoint_cfg.get("enabled", False)
+            if not isinstance(enabled, bool):
+                raise ConfigError("persistence.checkpoint.enabled must be a boolean")
+            every = checkpoint_cfg.get("every_agent_steps", 1)
+            if (
+                not isinstance(every, int)
+                or isinstance(every, bool)
+                or every < 1
+            ):
+                raise ConfigError(
+                    "persistence.checkpoint.every_agent_steps must be an int >= 1"
+                )
 
         if not isinstance(self.reliability, dict):
             raise ConfigError("reliability config must be a mapping")
@@ -287,3 +305,14 @@ class HarnessConfig:
     def verification_mode(self) -> str:
         verifier_cfg = self.reliability.get("verification") or {}
         return str(verifier_cfg.get("mode", "shadow"))
+
+    @property
+    def checkpoint_enabled(self) -> bool:
+        """Phase 2A2 durable checkpoints; off by default."""
+        checkpoint_cfg = self.persistence.get("checkpoint") or {}
+        return bool(checkpoint_cfg.get("enabled", False))
+
+    @property
+    def checkpoint_every_agent_steps(self) -> int:
+        checkpoint_cfg = self.persistence.get("checkpoint") or {}
+        return int(checkpoint_cfg.get("every_agent_steps", 1))

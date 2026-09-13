@@ -266,6 +266,17 @@ class TraceRecorder:
                 events.append(RuntimeEvent.model_validate_json(line))
         return events
 
+    def event_count(self) -> int:
+        """Number of events currently durably written to events.jsonl
+        (used for checkpoint trace offsets; counts lines, cheap and exact)."""
+        if not self._events_path.exists():
+            return 0
+        return sum(
+            1
+            for line in self._events_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+
     # -- read helpers (used by inspect-run and evaluation) -----------------
 
     @staticmethod

@@ -144,18 +144,36 @@ def test_sanitize_config_strips_secret_keys():
 
 def test_no_sentinel_leak_across_runs_and_experiments(tmp_path, monkeypatch):
     """Even with a secret present in the environment, no trace/config file
-    under runs/ or experiments/ may ever contain it (R3 sentinel test)."""
+    under runs/ or experiments/ may ever contain it (R3 sentinel test).
+
+    Phase 2A2: checkpoints are ENABLED here so the scan also covers
+    runs/<run_id>/checkpoints/ and runs/<run_id>/environment_ops.jsonl."""
     monkeypatch.setenv("MODEL_API_KEY", SENTINEL)
     monkeypatch.setenv("MODEL_BASE_URL", "https://sentinel-endpoint.example")
 
-    cfg = make_config(tmp_path)
+    cfg = make_config(
+        tmp_path,
+        persistence={"checkpoint": {"enabled": True, "every_agent_steps": 1}},
+    )
+
+    def two_step_env_factory():
+        # a first no-change step guarantees one safe-point checkpoint exists
+        # before the terminating step (safe points never sit on the break)
+        return FakeEnvironment(
+            reset_observation=make_fake_observation(url="http://fake.local/start"),
+            script=[
+                {"reward": 0.0, "terminated": False},
+                {"reward": 1.0, "terminated": True},
+            ],
+        )
+
     exp_dir, results = run_benchmark(
         cfg,
         benchmark_name="fake",
         tasks=["t1"],
         seeds=[0],
         experiments_root=tmp_path / "experiments",
-        environment_factory=fake_env_factory,
+        environment_factory=two_step_env_factory,
         agent_factory=agent_factory,
     )
     assert len(results) == 1
@@ -168,3 +186,8 @@ def test_no_sentinel_leak_across_runs_and_experiments(tmp_path, monkeypatch):
                 assert SENTINEL not in content, f"sentinel leaked into {path}"
                 scanned += 1
     assert scanned > 0
+    # the checkpoint/journal surfaces must exist so the scan is meaningful
+    run_dir = tmp_path / "runs" / results[0].run_id
+    assert (run_dir / "environment_ops.jsonl").exists()
+    assert (run_dir / "checkpoints" / "latest.json").exists()
+    assert (run_dir / "checkpoints" / "cp_000000.json").exists()

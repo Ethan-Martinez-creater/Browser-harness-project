@@ -38,8 +38,20 @@ from web_harness.core.models import RunResult, RunStatus, StepRecord, TaskSpec
 from web_harness.core.reliability import FailureKind, ReliabilityBudget
 from web_harness.env.base import EnvironmentAdapter
 from web_harness.observability.trace import TraceRecorder
+from web_harness.persistence.checkpoint import (
+    CheckpointManager,
+    CheckpointTraceOffsets,
+    action_contract_hash,
+    environment_resume_strategy,
+)
+from web_harness.persistence.journal import (
+    EnvironmentOperationJournal,
+    EnvironmentOperationKind,
+)
 from web_harness.persistence.schema import TRACE_SCHEMA_VERSION
-from web_harness.reliability.fingerprint import fingerprint_of
+from web_harness.reliability.fingerprint import (
+    fingerprint_of,
+)
 from web_harness.reliability.policy import PolicyAction
 from web_harness.reliability.recovery import RecoveryManager
 from web_harness.runtime.decision_executor import DecisionExecutor
@@ -105,6 +117,8 @@ class EpisodeRunner:
         recovery_budget: ReliabilityBudget | None = None,
         replan_trigger_policy: ReplanTriggerPolicy | None = None,
         replan_executor=None,
+        checkpoint_enabled: bool = False,
+        checkpoint_every_agent_steps: int = 1,
     ):
         self.agent = agent
         self.env = env
@@ -129,6 +143,10 @@ class EpisodeRunner:
         # None = replanning off (Phase 1C behavior unchanged).
         self.replan_trigger_policy = replan_trigger_policy
         self.replan_executor = replan_executor
+        # Phase 2A2: durable checkpoints at stable safe points. Off by
+        # default; enabling changes only I/O, never control flow.
+        self.checkpoint_enabled = checkpoint_enabled
+        self.checkpoint_every_agent_steps = max(1, int(checkpoint_every_agent_steps))
 
     # -- main entry ---------------------------------------------------------
 
@@ -203,37 +221,14 @@ class EpisodeRunner:
             # the environment is the single source of truth for the action space
             action_contract = self.env.action_contract()
 
-            # episode-level retry accounting (Phase 1B)
-            episode_retry_count = 0
-            episode_retry_cycle_count = 0
-            episode_retry_success_count = 0
-            episode_retry_exhausted_count = 0
-            episode_extra_model_calls = 0
-            episode_retry_input_tokens = 0
-            episode_retry_output_tokens = 0
-            episode_retry_latency_s = 0.0
-            # Phase 1C recovery accounting
-            episode_recovery_count = 0
-            episode_recovery_success_count = 0
-            episode_recovery_failed_count = 0
-            episode_recovery_env_actions = 0
-            episode_recovery_latency_s = 0.0
-            episode_recovered = False  # recovery triggered AND episode success
-            # blocked-action re-selections are counted separately from
-            # recoveries (R3): no directive is created, env.step is skipped
-            episode_blocked_action_redecisions = 0
-            # Phase 1D replan accounting. Invariant: replan_success + failed
-            # + unresolved == replan_count. replan_model_calls counts real
-            # model calls per intervention (incl. retries) — replan_count
-            # counts interventions.
-            episode_replan_count = 0
-            episode_replan_success_count = 0
-            episode_replan_failed_count = 0
-            episode_replan_unresolved_count = 0
-            episode_replan_model_calls = 0
-            episode_replan_input_tokens = 0
-            episode_replan_output_tokens = 0
-            episode_replan_latency_s = 0.0
+            # Phase 2A2: every REAL env.step lands in this fsynced journal;
+            # checkpoints live under run_dir/checkpoints/ (off by default).
+            # Episode accounting is kept in state.counters (single
+            # authoritative, serializable copy — checkpoint-safe).
+            journal = EnvironmentOperationJournal(run_dir)
+            checkpoint_manager = (
+                CheckpointManager(run_dir) if self.checkpoint_enabled else None
+            )
 
             def emit_runtime_event(fields: dict) -> None:
                 recorder.record_event(
@@ -271,8 +266,29 @@ class EpisodeRunner:
                     return None
                 return recorder.write_failed_attempt(**kwargs)
 
+            def record_recovery_operation(action: str, env_step) -> None:
+                """Durable journal entry for a Harness-owned recovery env
+                action (e.g. WAIT_AND_REOBSERVE noop) — written immediately
+                after env.step returns, before verification/checkpoint."""
+                journal.append(
+                    run_id=run_id,
+                    kind=EnvironmentOperationKind.RECOVERY_ACTION,
+                    action=action,
+                    post_observation_fingerprint=fingerprint_of(
+                        env_step.observation
+                    ),
+                    reward=env_step.reward,
+                    terminated=env_step.terminated,
+                    truncated=env_step.truncated,
+                    action_error=env_step.action_error,
+                    source_step_index=step_idx,
+                )
+
             recovery_manager = (
-                RecoveryManager(event_sink=emit_runtime_event)
+                RecoveryManager(
+                    event_sink=emit_runtime_event,
+                    op_sink=record_recovery_operation,
+                )
                 if self.failure_policy is not None
                 else None
             )
@@ -311,8 +327,6 @@ class EpisodeRunner:
                 The recovery-start fingerprint (not the last action's own
                 pre/post delta) is the reference so a recovery that itself
                 restored page state is judged correctly (R1)."""
-                nonlocal episode_recovery_success_count
-                nonlocal episode_recovery_failed_count
                 still_pending = []
                 for pending in state.reliability.pending_recovery_evaluations:
                     pending["steps_observed"] += 1
@@ -322,10 +336,10 @@ class EpisodeRunner:
                     )
                     state_changed = current_fingerprint != pending["pre_fingerprint"]
                     if (state_changed or task_success) and not repeated:
-                        episode_recovery_success_count += 1
+                        state.counters.recovery_success_count += 1
                         note_recovery_outcome(success=True, signature=signature)
                     elif pending["steps_observed"] >= 2 or repeated:
-                        episode_recovery_failed_count += 1
+                        state.counters.recovery_failed_count += 1
                         note_recovery_outcome(success=False, signature=signature)
                     else:
                         still_pending.append(pending)
@@ -354,8 +368,6 @@ class EpisodeRunner:
                 immediate repeat of the trigger signature -> SUCCESS; the
                 trigger signature reappearing -> FAILED (plan deactivated);
                 a horizon fully consumed without progress -> FAILED."""
-                nonlocal episode_replan_success_count
-                nonlocal episode_replan_failed_count
                 entry = state.reliability.pending_replan_evaluation
                 if entry is None:
                     return
@@ -365,27 +377,26 @@ class EpisodeRunner:
                 )
                 state_changed = current_fingerprint != entry["pre_fingerprint"]
                 if (state_changed or task_success) and not repeated:
-                    episode_replan_success_count += 1
+                    state.counters.replan_success_count += 1
                     state.reliability.pending_replan_evaluation = None
                     # replan success resets the recovery failure streak
                     state.reliability.consecutive_recovery_failures = 0
                     state.reliability.last_failed_recovery_signature = None
                 elif repeated:
-                    episode_replan_failed_count += 1
+                    state.counters.replan_failed_count += 1
                     state.reliability.pending_replan_evaluation = None
                     state.reliability.active_recovery_plan = None
                     state.reliability.remaining_plan_steps = None
 
             def consume_plan_horizon() -> None:
                 """Only a real Agent StepRecord consumes plan horizon."""
-                nonlocal episode_replan_failed_count
                 if state.reliability.active_recovery_plan is None:
                     return
                 state.reliability.remaining_plan_steps -= 1
                 if state.reliability.remaining_plan_steps <= 0:
                     # horizon exhausted: an unresolved outcome means FAILED
                     if state.reliability.pending_replan_evaluation is not None:
-                        episode_replan_failed_count += 1
+                        state.counters.replan_failed_count += 1
                     state.reliability.active_recovery_plan = None
                     state.reliability.remaining_plan_steps = None
                     state.reliability.pending_replan_evaluation = None
@@ -427,12 +438,12 @@ class EpisodeRunner:
                         if (
                             state.reliability.recovery_count
                             >= self.recovery_budget.max_recoveries_per_episode
-                            or episode_blocked_action_redecisions
+                            or state.counters.blocked_action_redecision_count
                             >= self.recovery_budget.max_recoveries_per_episode
                         ):
                             recovery_budget_exhausted = True
                             break
-                        episode_blocked_action_redecisions += 1
+                        state.counters.blocked_action_redecision_count += 1
                         emit_runtime_event(
                             {
                                 "event_type": "recovery",
@@ -467,13 +478,15 @@ class EpisodeRunner:
                         "action selected; refusing to execute it"
                     break
 
-                episode_retry_count += decision_result.retry_count
+                state.counters.retry_count += decision_result.retry_count
                 if decision_result.retry_count > 0:
-                    episode_retry_cycle_count += 1
-                episode_extra_model_calls += decision_result.retry_count
-                episode_retry_input_tokens += decision_result.retry_input_tokens
-                episode_retry_output_tokens += decision_result.retry_output_tokens
-                episode_retry_latency_s += decision_result.retry_latency_s
+                    state.counters.retry_cycle_count += 1
+                state.counters.extra_model_calls += decision_result.retry_count
+                state.counters.retry_input_tokens += decision_result.retry_input_tokens
+                state.counters.retry_output_tokens += (
+                    decision_result.retry_output_tokens
+                )
+                state.counters.retry_latency_s += decision_result.retry_latency_s
 
                 if not decision_result.success:
                     # terminal model-side failure: zero environment actions
@@ -499,7 +512,7 @@ class EpisodeRunner:
                     recorder.record_step(step, observation=observation)
                     state.steps.append(step)
                     if decision_result.retry_exhausted or decision_result.budget_exhausted:
-                        episode_retry_exhausted_count += 1
+                        state.counters.retry_exhausted_count += 1
                     error_type = decision_result.terminal_error_type
                     error_message = decision_result.terminal_error_message
                     break
@@ -507,7 +520,7 @@ class EpisodeRunner:
                 turn = decision_result.turn
                 prompt = decision_result.prompt
                 if decision_result.retry_success:
-                    episode_retry_success_count += 1
+                    state.counters.retry_success_count += 1
 
                 # act: any environment exception is normalized here so the
                 # episode can be traced and the model can react next step
@@ -523,6 +536,21 @@ class EpisodeRunner:
                     env_step = EnvironmentStep(
                         observation=fallback, action_error=str(exc)
                     )
+                # Phase 2A2: durable environment operation record BEFORE any
+                # verification/trace/checkpoint work continues (append+fsync)
+                journal.append(
+                    run_id=run_id,
+                    kind=EnvironmentOperationKind.AGENT_ACTION,
+                    action=turn.decision.action,
+                    post_observation_fingerprint=fingerprint_of(
+                        env_step.observation
+                    ),
+                    reward=env_step.reward,
+                    terminated=env_step.terminated,
+                    truncated=env_step.truncated,
+                    action_error=env_step.action_error,
+                    source_step_index=step_idx,
+                )
                 step_latency_ms = (time.monotonic() - t0) * 1000.0
 
                 # verify (shadow) BEFORE recording so the verification summary
@@ -675,8 +703,8 @@ class EpisodeRunner:
                         )
                     status = RunStatus.SUCCESS if env_step.reward > 0 else RunStatus.FAILED
                     error_type = ErrorType.TASK_TERMINATED
-                    if status == RunStatus.SUCCESS and episode_recovery_count > 0:
-                        episode_recovered = True
+                    if status == RunStatus.SUCCESS and state.counters.recovery_count > 0:
+                        state.counters.recovered_episode = True
                     break
                 if env_step.truncated:
                     status = RunStatus.TRUNCATED
@@ -736,7 +764,7 @@ class EpisodeRunner:
                             )
                             if escalation.trigger:
                                 escalated = True
-                                episode_replan_count += 1
+                                state.counters.replan_count += 1
                                 # keep the state in sync: the trigger policy
                                 # reads replan_count from ReliabilityState
                                 state.reliability.replan_count += 1
@@ -758,7 +786,7 @@ class EpisodeRunner:
                                             state.reliability
                                             .consecutive_recovery_failures,
                                             "replan_count":
-                                            episode_replan_count,
+                                            state.counters.replan_count,
                                         },
                                     }
                                 )
@@ -776,10 +804,12 @@ class EpisodeRunner:
                                     event_sink=emit_runtime_event,
                                     attempt_sink=attempt_sink,
                                 )
-                                episode_replan_model_calls += gen.attempts
-                                episode_replan_input_tokens += gen.input_tokens
-                                episode_replan_output_tokens += gen.output_tokens
-                                episode_replan_latency_s += gen.latency_s
+                                state.counters.replan_model_calls += gen.attempts
+                                state.counters.replan_input_tokens += gen.input_tokens
+                                state.counters.replan_output_tokens += (
+                                    gen.output_tokens
+                                )
+                                state.counters.replan_latency_s += gen.latency_s
                                 if gen.success:
                                     state.reliability.active_recovery_plan = (
                                         gen.plan
@@ -795,7 +825,7 @@ class EpisodeRunner:
                                         ),
                                     }
                                     artifact_ref = recorder.write_replan_plan(
-                                        replan_index=episode_replan_count,
+                                        replan_index=state.counters.replan_count,
                                         plan=gen.plan,
                                         trigger_reason=escalation.reason.value
                                         if escalation.reason else None,
@@ -834,7 +864,7 @@ class EpisodeRunner:
                                         }
                                     )
                                 else:
-                                    episode_replan_failed_count += 1
+                                    state.counters.replan_failed_count += 1
                                     emit_runtime_event(
                                         {
                                             "event_type": "replan",
@@ -863,9 +893,13 @@ class EpisodeRunner:
                                 reliability_state=state.reliability,
                                 step_index=step_idx,
                             )
-                            episode_recovery_count += 1
-                            episode_recovery_env_actions += recovery_result.environment_actions
-                            episode_recovery_latency_s += recovery_result.latency_s
+                            state.counters.recovery_count += 1
+                            state.counters.recovery_environment_actions += (
+                                recovery_result.environment_actions
+                            )
+                            state.counters.recovery_latency_s += (
+                                recovery_result.latency_s
+                            )
                             if recovery_result.terminal:
                                 # the recovery noop itself ended the task: accept
                                 # the environment's real terminal semantics and
@@ -877,7 +911,7 @@ class EpisodeRunner:
                                 if env_step.truncated:
                                     status = RunStatus.TRUNCATED
                                     error_type = ErrorType.TASK_TRUNCATED
-                                    episode_recovery_failed_count += 1
+                                    state.counters.recovery_failed_count += 1
                                     note_recovery_outcome(
                                         success=False,
                                         signature=_priority_signature(
@@ -887,13 +921,13 @@ class EpisodeRunner:
                                 elif env_step.terminated and env_step.reward > 0:
                                     status = RunStatus.SUCCESS
                                     error_type = ErrorType.TASK_TERMINATED
-                                    episode_recovery_success_count += 1
-                                    episode_recovered = True
+                                    state.counters.recovery_success_count += 1
+                                    state.counters.recovered_episode = True
                                     note_recovery_outcome(success=True, signature=None)
                                 else:
                                     status = RunStatus.FAILED
                                     error_type = ErrorType.TASK_TERMINATED
-                                    episode_recovery_failed_count += 1
+                                    state.counters.recovery_failed_count += 1
                                     note_recovery_outcome(
                                         success=False,
                                         signature=_priority_signature(
@@ -907,7 +941,7 @@ class EpisodeRunner:
                                 # must NOT also enter pending evaluation (the
                                 # three outcome paths are mutually exclusive —
                                 # closure B2)
-                                episode_recovery_failed_count += 1
+                                state.counters.recovery_failed_count += 1
                                 note_recovery_outcome(
                                     success=False,
                                     signature=_priority_signature(
@@ -932,6 +966,54 @@ class EpisodeRunner:
                             # the recovery observation drives the next decision
                             observation = recovery_result.observation
                             state.current_observation = observation
+
+                # Phase 2A2 stable safe point: the step record, its events and
+                # any environment operation are durably written, the
+                # observation matches the live environment, no model call or
+                # env.step is in flight, and the next agent decision has not
+                # started. Nothing below this line may run mid-step.
+                if checkpoint_manager is not None and (
+                    (step_idx + 1) % self.checkpoint_every_agent_steps == 0
+                ):
+                    envelope = checkpoint_manager.save(
+                        run_id=run_id,
+                        created_at=now_utc_iso(),
+                        reason="stable_safe_point",
+                        task=task,
+                        state=state,
+                        next_step_index=step_idx + 1,
+                        environment_op_count=journal.count,
+                        current_environment_fingerprint=fingerprint_of(
+                            state.current_observation
+                        ),
+                        action_contract_hash=action_contract_hash(action_contract),
+                        environment_adapter=type(self.env).__name__,
+                        resume_strategy=environment_resume_strategy(
+                            self.env, benchmark=task.benchmark
+                        ).value,
+                        trace_offsets=CheckpointTraceOffsets(
+                            step_count=state.num_steps,
+                            event_count=recorder.event_count(),
+                            environment_op_count=journal.count,
+                        ),
+                        git_commit=git_commit(),
+                        config_hash=self.manifest_extra.get("config_hash"),
+                    )
+                    emit_runtime_event(
+                        {
+                            "event_type": "checkpoint",
+                            "step_index": step_idx,
+                            "component": "checkpoint_manager",
+                            "outcome": "saved",
+                            "data": {
+                                "checkpoint_id": envelope.checkpoint_id,
+                                "next_step_index": envelope.next_step_index,
+                                "environment_op_count": (
+                                    envelope.environment_op_count
+                                ),
+                            },
+                        }
+                    )
             else:
                 status = RunStatus.MAX_STEPS_REACHED
                 error_type = ErrorType.MAX_STEPS_EXCEEDED
@@ -939,7 +1021,7 @@ class EpisodeRunner:
             # finalize pending recovery outcomes: an episode that ends before
             # its 2-step evaluation window completes must not lose them
             # silently (B3) — they are counted as explicitly unresolved.
-            episode_recovery_unresolved_count = len(
+            state.counters.recovery_unresolved_count = len(
                 state.reliability.pending_recovery_evaluations
             )
             state.reliability.pending_recovery_evaluations = []
@@ -947,7 +1029,7 @@ class EpisodeRunner:
             # a plan outcome that the episode outlived is explicitly
             # unresolved, never silently dropped (Phase 1D)
             if state.reliability.pending_replan_evaluation is not None:
-                episode_replan_unresolved_count += 1
+                state.counters.replan_unresolved_count += 1
             state.reliability.pending_replan_evaluation = None
             state.reliability.active_recovery_plan = None
             state.reliability.remaining_plan_steps = None
@@ -958,30 +1040,6 @@ class EpisodeRunner:
             return self._finish(
                 recorder, state, status, error_type, error_message,
                 started, started_at, run_dir, final_reward=final_reward,
-                retry_count=episode_retry_count,
-                retry_cycle_count=episode_retry_cycle_count,
-                retry_success_count=episode_retry_success_count,
-                retry_exhausted_count=episode_retry_exhausted_count,
-                extra_model_calls=episode_extra_model_calls,
-                retry_input_tokens=episode_retry_input_tokens,
-                retry_output_tokens=episode_retry_output_tokens,
-                retry_latency_s=episode_retry_latency_s,
-                recovery_count=episode_recovery_count,
-                recovery_success_count=episode_recovery_success_count,
-                recovery_failed_count=episode_recovery_failed_count,
-                recovery_unresolved_count=episode_recovery_unresolved_count,
-                recovered_episode=episode_recovered,
-                recovery_environment_actions=episode_recovery_env_actions,
-                recovery_latency_s=episode_recovery_latency_s,
-                blocked_action_redecisions=episode_blocked_action_redecisions,
-                replan_count=episode_replan_count,
-                replan_success_count=episode_replan_success_count,
-                replan_failed_count=episode_replan_failed_count,
-                replan_unresolved_count=episode_replan_unresolved_count,
-                replan_model_calls=episode_replan_model_calls,
-                replan_input_tokens=episode_replan_input_tokens,
-                replan_output_tokens=episode_replan_output_tokens,
-                replan_latency_s=episode_replan_latency_s,
             )
         finally:
             # the environment must be closed on every path
@@ -1035,30 +1093,6 @@ class EpisodeRunner:
         started_at: str,
         run_dir: Path,
         final_reward: float = 0.0,
-        recovery_count: int = 0,
-        recovery_success_count: int = 0,
-        recovery_failed_count: int = 0,
-        recovery_unresolved_count: int = 0,
-        recovered_episode: bool = False,
-        recovery_environment_actions: int = 0,
-        recovery_latency_s: float = 0.0,
-        blocked_action_redecisions: int = 0,
-        replan_count: int = 0,
-        replan_success_count: int = 0,
-        replan_failed_count: int = 0,
-        replan_unresolved_count: int = 0,
-        replan_model_calls: int = 0,
-        replan_input_tokens: int = 0,
-        replan_output_tokens: int = 0,
-        replan_latency_s: float = 0.0,
-        retry_count: int = 0,
-        retry_cycle_count: int = 0,
-        retry_success_count: int = 0,
-        retry_exhausted_count: int = 0,
-        extra_model_calls: int = 0,
-        retry_input_tokens: int = 0,
-        retry_output_tokens: int = 0,
-        retry_latency_s: float = 0.0,
     ) -> RunResult:
         state.status = status
         duration = time.monotonic() - started
@@ -1066,6 +1100,9 @@ class EpisodeRunner:
         for step in state.steps:
             for kind in step.failure_kinds:
                 kind_counts[kind] = kind_counts.get(kind, 0) + 1
+        # single authoritative accounting source (Phase 2A2): RunResult
+        # semantics are identical to Phase 0-1, read from state.counters
+        counters = state.counters
         result = RunResult(
             run_id=state.run_id,
             task_spec=state.task,
@@ -1078,8 +1115,8 @@ class EpisodeRunner:
             duration_s=duration,
             # episode total tokens = agent decision-path tokens + Replanner
             # tokens (closure B2); the retry/replan breakdown stays separate
-            input_tokens=state.input_tokens + replan_input_tokens,
-            output_tokens=state.output_tokens + replan_output_tokens,
+            input_tokens=state.input_tokens + counters.replan_input_tokens,
+            output_tokens=state.output_tokens + counters.replan_output_tokens,
             action_error_count=state.action_error_count,
             trace_path=str(run_dir),
             error_type=error_type,
@@ -1094,30 +1131,30 @@ class EpisodeRunner:
             ),
             failure_signal_count=state.reliability.total_failure_signals,
             failure_kind_counts=kind_counts,
-            retry_count=retry_count,
-            retry_cycle_count=retry_cycle_count,
-            retry_success_count=retry_success_count,
-            retry_exhausted_count=retry_exhausted_count,
-            extra_model_calls=extra_model_calls,
-            retry_input_tokens=retry_input_tokens,
-            retry_output_tokens=retry_output_tokens,
-            retry_latency_s=retry_latency_s,
-            recovery_count=recovery_count,
-            recovery_success_count=recovery_success_count,
-            recovery_failed_count=recovery_failed_count,
-            recovery_unresolved_count=recovery_unresolved_count,
-            recovered_episode=recovered_episode,
-            recovery_environment_actions=recovery_environment_actions,
-            recovery_latency_s=recovery_latency_s,
-            blocked_action_redecision_count=blocked_action_redecisions,
-            replan_count=replan_count,
-            replan_success_count=replan_success_count,
-            replan_failed_count=replan_failed_count,
-            replan_unresolved_count=replan_unresolved_count,
-            replan_model_calls=replan_model_calls,
-            replan_input_tokens=replan_input_tokens,
-            replan_output_tokens=replan_output_tokens,
-            replan_latency_s=replan_latency_s,
+            retry_count=counters.retry_count,
+            retry_cycle_count=counters.retry_cycle_count,
+            retry_success_count=counters.retry_success_count,
+            retry_exhausted_count=counters.retry_exhausted_count,
+            extra_model_calls=counters.extra_model_calls,
+            retry_input_tokens=counters.retry_input_tokens,
+            retry_output_tokens=counters.retry_output_tokens,
+            retry_latency_s=counters.retry_latency_s,
+            recovery_count=counters.recovery_count,
+            recovery_success_count=counters.recovery_success_count,
+            recovery_failed_count=counters.recovery_failed_count,
+            recovery_unresolved_count=counters.recovery_unresolved_count,
+            recovered_episode=counters.recovered_episode,
+            recovery_environment_actions=counters.recovery_environment_actions,
+            recovery_latency_s=counters.recovery_latency_s,
+            blocked_action_redecision_count=counters.blocked_action_redecision_count,
+            replan_count=counters.replan_count,
+            replan_success_count=counters.replan_success_count,
+            replan_failed_count=counters.replan_failed_count,
+            replan_unresolved_count=counters.replan_unresolved_count,
+            replan_model_calls=counters.replan_model_calls,
+            replan_input_tokens=counters.replan_input_tokens,
+            replan_output_tokens=counters.replan_output_tokens,
+            replan_latency_s=counters.replan_latency_s,
         )
         recorder.write_result(result)
         return result

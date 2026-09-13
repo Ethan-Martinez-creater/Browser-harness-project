@@ -70,6 +70,8 @@ def run(
         model_provider=cfg.model.get("provider", "openai_compatible"),
         model_name=cfg.model.get("model"),
         manifest_extra={"config_hash": cfg.hash, "git_commit": git_commit()},
+        checkpoint_enabled=cfg.checkpoint_enabled,
+        checkpoint_every_agent_steps=cfg.checkpoint_every_agent_steps,
     )
     task_spec = TaskSpec(
         benchmark=benchmark_name,

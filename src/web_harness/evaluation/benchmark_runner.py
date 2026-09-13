@@ -277,6 +277,8 @@ def run_benchmark(
                 recovery_budget=default_budget_from_config(cfg.reliability),
                 replan_trigger_policy=replan_trigger_policy,
                 replan_executor=replan_executor,
+                checkpoint_enabled=cfg.checkpoint_enabled,
+                checkpoint_every_agent_steps=cfg.checkpoint_every_agent_steps,
             )
             logger.info("episode start: %s seed=%s", task.task_id, seed)
             result = runner.run(task, run_id=new_run_id())
